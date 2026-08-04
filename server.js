@@ -149,11 +149,21 @@ async function tarkovApiRequest(payload, { retries = 4, baseDelayMs = 3000 } = {
 }
 
 // --- JSON API (json.tarkov.dev) - zapasowe źródło, gdy GraphQL (api.tarkov.dev) pada ---
-// UWAGA: tarkov.dev czasem serwuje pod tym adresem dane-placeholder (name === "<id> Name"),
-// kiedy ich backend danych gry jest wyłączony - traktujemy to jak brak danych (rzucamy błąd),
-// żeby nigdy nie nadpisać realnego cache śmieciowymi nazwami.
+// UWAGA: tarkov.dev czasem serwuje pod tym adresem dane-placeholder w polach name/shortName
+// (== "<id> Name"), kiedy ich backend danych gry jest wyłączony. Ceny, ikony i cała reszta
+// pól zostają jednak prawdziwe - i co ważne, pole normalizedName (slug typu
+// "colt-m4a1-556x45-assault-rifle") NIE jest placeholderem. W takiej sytuacji wyprowadzamy
+// czytelną nazwę ze sluga zamiast odrzucać cały rekord - to dużo lepsze niż surowe id.
 function looksLikePlaceholder(name, id) {
     return typeof name === 'string' && typeof id === 'string' && name.startsWith(id);
+}
+function humanizeSlug(slug) {
+    if (!slug || typeof slug !== 'string') return null;
+    return slug.split('-').filter(Boolean).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+function resolveName(rawName, id, normalizedName) {
+    if (!looksLikePlaceholder(rawName, id)) return rawName;
+    return humanizeSlug(normalizedName) || rawName;
 }
 
 async function fetchJsonApi(path) {
@@ -163,20 +173,32 @@ async function fetchJsonApi(path) {
 
 async function fetchItemsFromJsonApi() {
     const data = await fetchJsonApi('/regular/items');
-    const list = Object.values(data.items || {});
-    if (list.length === 0) throw new Error('json.tarkov.dev: pusta lista itemów');
-    if (looksLikePlaceholder(list[0].name, list[0].id)) throw new Error('json.tarkov.dev zwraca dane-placeholder (ich backend danych gry jest wyłączony)');
-    return list;
+    const rawList = Object.values(data.items || {});
+    if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista itemów');
+
+    if (looksLikePlaceholder(rawList[0].name, rawList[0].id)) {
+        console.warn("⚠️ [MARKET] tarkov.dev nie zwraca prawdziwych nazw (ich backend danych gry jest wyłączony) - używam nazw wyprowadzonych ze slugów (normalizedName). Ceny i obrazki są prawdziwe.");
+    }
+    return rawList.map(i => {
+        const name = resolveName(i.name, i.id, i.normalizedName);
+        return { ...i, name, shortName: looksLikePlaceholder(i.shortName, i.id) ? name : i.shortName };
+    });
 }
 
 async function fetchTasksFromJsonApi() {
     const [tasksData, tradersData] = await Promise.all([fetchJsonApi('/regular/tasks'), fetchJsonApi('/regular/traders')]);
-    const list = Object.values(tasksData.tasks || {});
-    if (list.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
-    if (looksLikePlaceholder(list[0].name, list[0].id)) throw new Error('json.tarkov.dev zwraca dane-placeholder (ich backend danych gry jest wyłączony)');
+    const rawList = Object.values(tasksData.tasks || {});
+    if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
+
+    if (looksLikePlaceholder(rawList[0].name, rawList[0].id)) {
+        console.warn("⚠️ [KAPPA] tarkov.dev nie zwraca prawdziwych nazw questów - używam nazw wyprowadzonych ze slugów (normalizedName).");
+    }
+    const list = rawList.map(t => ({ ...t, name: resolveName(t.name, t.id, t.normalizedName) }));
 
     const traderById = {};
-    Object.values(tradersData || {}).forEach(t => { if (t && t.id) traderById[t.id] = { name: t.name, imageLink: t.imageLink || '' }; });
+    Object.values(tradersData || {}).forEach(t => {
+        if (t && t.id) traderById[t.id] = { name: resolveName(t.name, t.id, t.normalizedName), imageLink: t.imageLink || '' };
+    });
     const taskNameById = {};
     list.forEach(t => { taskNameById[t.id] = t.name; });
 
