@@ -241,28 +241,6 @@
         </div>
 
         <div style="max-width: 1000px; margin: 0 auto;">
-            <h2 class="section-title">Przedmioty (Collector)</h2>
-            <div class="kappa-grid" id="itemsGrid">
-                <% items.forEach(item => { 
-                    let statusClass = item.is_collected === 1 ? 'in-progress' : (item.is_collected === 2 ? 'done' : 'todo');
-                %>
-                    <form action="/kappa/toggle/<%= item.id %>" method="POST" id="form-<%= item.id %>" style="display:contents;" 
-                        class="filterable-item" data-status="<%= statusClass %>" data-new="<%= item.is_new %>">
-                        
-                        <div class="kappa-card <%= statusClass %>" onclick="submitAndSaveScroll('form-<%= item.id %>')">
-                            <% if (item.is_new && item.is_collected === 0) { %> 
-                                <div class="new-badge" onmouseover="vanish(this, '<%= item.id %>')" title="Najedź by usunąć">NEW!</div> 
-                            <% } %>
-                            <div class="status-icon-card check">✓</div>
-                            <img src="<%= item.image || 'https://via.placeholder.com/50' %>" alt="icon">
-                            <span class="searchable-text"><%= item.name %></span>
-                        </div>
-                    </form>
-                <% }) %>
-            </div>
-        </div>
-
-        <div style="max-width: 1000px; margin: 0 auto;">
             <h2 class="section-title">Questy</h2>
             <table class="quest-table" id="questsTable">
                 <thead>
@@ -320,6 +298,28 @@
                     <% }) %>
                 </tbody>
             </table>
+        </div>
+
+        <div style="max-width: 1000px; margin: 0 auto;">
+            <h2 class="section-title">Przedmioty (Collector)</h2>
+            <div class="kappa-grid" id="itemsGrid">
+                <% items.forEach(item => {
+                    let statusClass = item.is_collected === 1 ? 'in-progress' : (item.is_collected === 2 ? 'done' : 'todo');
+                %>
+                    <form action="/kappa/toggle/<%= item.id %>" method="POST" id="form-<%= item.id %>" style="display:contents;"
+                        class="filterable-item" data-status="<%= statusClass %>" data-new="<%= item.is_new %>">
+
+                        <div class="kappa-card <%= statusClass %>" onclick="submitAndSaveScroll('form-<%= item.id %>')">
+                            <% if (item.is_new && item.is_collected === 0) { %>
+                                <div class="new-badge" onmouseover="vanish(this, '<%= item.id %>')" title="Najedź by usunąć">NEW!</div>
+                            <% } %>
+                            <div class="status-icon-card check">✓</div>
+                            <img src="<%= item.image || 'https://via.placeholder.com/50' %>" alt="icon">
+                            <span class="searchable-text"><%= item.name %></span>
+                        </div>
+                    </form>
+                <% }) %>
+            </div>
         </div>
 
         <form action="/kappa/refresh" method="POST">
