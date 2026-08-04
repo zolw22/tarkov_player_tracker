@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kappa Tracker</title>
+    <style>
+        body { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; padding: 10px; }
+        
+        .nav-bar { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
+        .nav-link { 
+            text-decoration: none; color: #888; padding: 8px 20px; border: 1px solid #333; border-radius: 4px; background: #1a1a1a; 
+            font-weight: bold; text-transform: uppercase;
+        }
+        .nav-link.active { background: #9a8c68; color: #000; border-color: #9a8c68; }
+
+        h2.section-title { border-bottom: 2px solid #333; padding-bottom: 5px; color: #9a8c68; margin-top: 30px; margin-bottom: 15px; font-size: 1.2em; text-transform: uppercase; }
+
+        .stats-container { display: flex; gap: 15px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+        .stat-card { background: #1a1a1a; border: 1px solid #333; padding: 10px 20px; border-radius: 4px; text-align: center; min-width: 120px; }
+        .stat-value { font-size: 1.5em; font-weight: bold; color: #fff; }
+        .stat-label { font-size: 0.8em; color: #888; text-transform: uppercase; margin-top: 5px; }
+        .stat-percent { font-size: 0.9em; color: #9a8c68; margin-top: 2px; }
+        .stat-card.total { border-color: #9a8c68; background: #222; }
+
+        .controls-wrapper { 
+            max-width: 1100px; margin: 0 auto 20px auto; 
+            display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; justify-content: center;
+            background: #181818; padding: 15px; border-radius: 6px; border: 1px solid #333;
+        }
+        
+        .control-section { display: flex; flex-direction: column; gap: 5px; }
+        .section-label { font-size: 0.7em; color: #777; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; margin-bottom: 2px; }
+
+        .search-container { flex: 1; min-width: 200px; }
+        .filter-input { width: 100%; padding: 12px; font-size: 1.1em; background: #000; border: 2px solid #444; color: #fff; border-radius: 4px; box-sizing: border-box; text-align: center; }
+        
+        .level-filter-box {
+            display: flex; align-items: center; gap: 10px; background: #222; padding: 8px 15px; border-radius: 4px; border: 1px solid #444; height: 45px; box-sizing: border-box;
+        }
+        .level-input { width: 60px; padding: 8px; background: #0f0f0f; color: #9a8c68; border: 1px solid #555; text-align: center; border-radius: 3px; font-weight: bold; font-size: 1.2em; }
+        
+        .faction-switch { display: flex; background: #000; border-radius: 4px; border: 1px solid #444; overflow: hidden; }
+        .faction-opt { padding: 8px 12px; cursor: pointer; color: #666; font-weight: bold; font-size: 0.8em; transition: 0.2s; }
+        .faction-opt:hover { background: #111; color: #aaa; }
+        .faction-opt.active { background: #333; color: #fff; }
+        .faction-opt.usec.active { background: #1a2a3a; color: #4da6ff; border-bottom: 2px solid #4da6ff; }
+        .faction-opt.bear.active { background: #2a1a1a; color: #ff6666; border-bottom: 2px solid #ff6666; }
+
+        .switch { position: relative; display: inline-block; width: 40px; height: 20px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 20px; }
+        .slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 3px; bottom: 3px; background-color: white; transition: .4s; border-radius: 50%; }
+        input:checked + .slider { background-color: #9a8c68; }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .status-filters { display: flex; gap: 5px; flex-wrap: wrap; }
+        .status-btn { background: #1a1a1a; border: 1px solid #444; color: #888; padding: 8px 12px; cursor: pointer; border-radius: 4px; font-weight: bold; font-size: 0.85em; display: flex; align-items: center; gap: 6px; }
+        .status-btn.active { border-color: #9a8c68; color: #fff; background: #333; }
+        .btn-count { background: #2a2a2a; color: #aaa; padding: 1px 5px; border-radius: 3px; font-size: 0.8em; }
+        .status-btn.active .btn-count { background: #555; color: #fff; }
+
+        .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+        .dot-all { background: #fff; }
+        .dot-todo { background: #444; }
+        .dot-prog { background: #ff9800; }
+        .dot-done { background: #4caf50; }
+        .dot-new { background: #d32f2f; }
+
+        .add-forms-container { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-bottom: 30px; }
+        .manual-add-form { background: #1e1e1e; padding: 10px; border-radius: 4px; display: flex; gap: 10px; align-items: center; border: 1px solid #333; position: relative; }
+        .add-input { padding: 8px; border-radius: 3px; border: 1px solid #444; background: #0f0f0f; color: #ccc; width: 220px; }
+        .add-btn { background: #3b5b7b; color: white; padding: 8px 15px; border: none; cursor: pointer; border-radius: 3px; font-weight: bold; }
+        
+        .suggestions-box { position: absolute; top: 100%; left: 0; width: 100%; max-height: 200px; overflow-y: auto; background: #111; border: 1px solid #444; z-index: 1000; display: none; box-shadow: 0 4px 8px rgba(0,0,0,0.8); }
+        .suggestion-item { padding: 8px; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #222; font-size: 0.9em; }
+        .suggestion-item:hover { background: #333; }
+        .suggestion-img { width: 30px; height: 30px; object-fit: contain; }
+
+        .quest-table { width: 100%; max-width: 1000px; margin: 0 auto; border-collapse: collapse; font-size: 0.9em; }
+        .quest-table th { text-align: left; padding: 10px; background: #1a1a1a; color: #777; border-bottom: 2px solid #333; cursor: pointer; user-select: none; transition: 0.2s; }
+        .quest-table th:hover { background: #252525; color: #fff; }
+        .quest-table th.no-sort { cursor: default; }
+        .quest-table th.no-sort:hover { background: #1a1a1a; color: #777; }
+        .quest-table td { padding: 8px 10px; border-bottom: 1px solid #222; vertical-align: middle; }
+        .quest-row { background: #161616; transition: 0.2s; }
+        .quest-row:hover { background: #222; }
+        .quest-row.in-progress { background: #252010; border-left: 3px solid #ff9800; }
+        .quest-row.in-progress td { color: #ffcc80; }
+        .quest-row.done { opacity: 0.4; background: #0f150f; border-left: 3px solid #4caf50; }
+        .quest-row.done td { text-decoration: line-through; color: #555; }
+        .quest-row.done .req-text { text-decoration: none; }
+
+        .quest-link { color: #e0e0e0; text-decoration: none; border-bottom: 1px dotted #777; transition: 0.2s; }
+        .quest-link:hover { color: #9a8c68; border-bottom: 1px solid #9a8c68; }
+        .quest-row.in-progress .quest-link { color: #ffcc80; border-color: #ff9800; }
+        .quest-row.done .quest-link { color: #555; border-color: #333; }
+
+        .action-cell { white-space: nowrap; display: flex; gap: 5px; justify-content: center; }
+        .btn-action { width: 30px; height: 30px; border: 1px solid #444; background: #1a1a1a; color: #666; cursor: pointer; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 1.1em; transition: 0.2s; }
+        .btn-action:hover { background: #333; color: #fff; }
+        .btn-action.prog.active { background: #ff9800; color: #000; border-color: #ff9800; box-shadow: 0 0 5px #ff9800; }
+        .btn-action.done.active { background: #4caf50; color: #000; border-color: #4caf50; box-shadow: 0 0 5px #4caf50; }
+
+        .kappa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; max-width: 1000px; margin: 0 auto; }
+        .kappa-card { background: #1e1e1e; border: 1px solid #333; border-radius: 4px; padding: 15px 10px; display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; transition: 0.2s; position: relative; min-height: 110px; justify-content: flex-start; }
+        .kappa-card.in-progress { border-color: #ff9800; background: #2a251a; }
+        .kappa-card.in-progress span { color: #ff9800; }
+        .kappa-card.done { background: #122212; border-color: #2e5e30; }
+        .kappa-card.done img { opacity: 1; filter: grayscale(0%); transform: scale(1.1); }
+        .kappa-card.done span { color: #4caf50; text-decoration: line-through; }
+        .status-icon-card { position: absolute; top: 5px; right: 5px; font-size: 1.2em; display: none; }
+        .kappa-card.done .status-icon-card.check { display: block; color: #4caf50; }
+        .new-badge { position: absolute; top: -5px; left: -5px; background: #d32f2f; color: white; font-size: 0.7em; font-weight: bold; padding: 2px 6px; border-radius: 3px; z-index: 10; cursor: default; transition: opacity 0.3s ease, transform 0.3s ease; }
+        .new-badge:hover { transform: scale(1.1); }
+        
+        .trader-tag { font-weight: bold; color: #aaa; text-transform: uppercase; font-size: 0.8em; }
+        /* NOWY STYL IKONY HANDLARZA */
+        .trader-icon { 
+            width: 35px; height: 35px; border-radius: 50%; object-fit: cover; 
+            border: 1px solid #444; background: #000;
+        }
+        
+        .map-tag { color: #888; font-style: italic; font-size: 0.85em; }
+        .level-tag { color: #9a8c68; font-weight: bold; }
+        .req-text { font-size: 0.85em; color: #666; font-style: italic; }
+        .refresh-btn { background: #333; color: #aaa; border: 1px solid #444; padding: 8px 15px; cursor: pointer; border-radius: 4px; font-size: 0.8em; margin: 40px auto; display: block; }
+    </style>
+</head>
+<body>
+
+    <div class="nav-bar">
+        <a href="/" class="nav-link">Loot & Hideout</a>
+        <a href="/kappa" class="nav-link active">Kappa Collector</a>
+    </div>
+
+    <div class="stats-container">
+        <div class="stat-card">
+            <div class="stat-value"><%= stats.itemsDone %> / <%= stats.itemsTotal %></div>
+            <div class="stat-label">Przedmioty</div>
+            <div class="stat-percent"><%= stats.itemsPercent %>%</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value"><%= stats.questsDone %> / <%= stats.questsTotal %></div>
+            <div class="stat-label">Questy</div>
+            <div class="stat-percent"><%= stats.questsPercent %>%</div>
+        </div>
+        <div class="stat-card total">
+            <div class="stat-value"><%= stats.totalPercent %>%</div>
+            <div class="stat-label">KAPPA POSTĘP</div>
+        </div>
+    </div>
+
+    <div class="controls-wrapper">
+        <div class="control-section search-container">
+            <span class="section-label">Wyszukiwarka</span>
+            <input type="text" id="pageFilter" class="filter-input" placeholder="Wpisz nazwę questa..." onkeyup="applyFilters()">
+        </div>
+        
+        <div class="control-section">
+            <span class="section-label">Ustawienia Postaci</span>
+            <div class="level-filter-box">
+                <span style="font-size:0.9em; font-weight:bold;">LVL:</span>
+                <input type="number" id="myLevel" class="level-input" value="1" min="1" max="99" onchange="applyFilters()">
+                
+                <div style="display:flex; flex-direction:column; align-items:center; margin-left:10px;">
+                    <label class="switch">
+                        <input type="checkbox" id="levelToggle" onchange="applyFilters()">
+                        <span class="slider"></span>
+                    </label>
+                    <span style="font-size:0.6em; color:#888;">DOSTĘPNE</span>
+                </div>
+
+                <div class="faction-switch" style="margin-left: 15px;">
+                    <div class="faction-opt active" onclick="setFaction('any', this)">ALL</div>
+                    <div class="faction-opt usec" onclick="setFaction('USEC', this)">USEC</div>
+                    <div class="faction-opt bear" onclick="setFaction('BEAR', this)">BEAR</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="control-section">
+            <span class="section-label">Filtrowanie Listy</span>
+            <div class="status-filters">
+                <button class="status-btn active" onclick="setStatusFilter('all', this)">
+                    <span class="dot dot-all"></span>All <span class="btn-count"><%= stats.totalAll %></span>
+                </button>
+                <% if(stats.countNew > 0) { %>
+                <button class="status-btn" onclick="setStatusFilter('new', this)">
+                    <span class="dot dot-new"></span>NEW <span class="btn-count" style="color:#ff8a80"><%= stats.countNew %></span>
+                </button>
+                <% } %>
+                <button class="status-btn" onclick="setStatusFilter('todo', this)">
+                    <span class="dot dot-todo"></span>Todo <span class="btn-count"><%= stats.countTodo %></span>
+                </button>
+                <button class="status-btn" onclick="setStatusFilter('progress', this)">
+                    <span class="dot dot-prog"></span>WIP <span class="btn-count"><%= stats.countProgress %></span>
+                </button>
+                <button class="status-btn" onclick="setStatusFilter('done', this)">
+                    <span class="dot dot-done"></span>Done <span class="btn-count"><%= stats.countDone %></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="add-forms-container">
+        <div class="manual-add-form">
+            <form action="/kappa/add" method="POST" autocomplete="off" style="display:flex; align-items:center; gap:10px;">
+                <div style="position:relative;">
+                    <input type="text" id="itemName" name="name" class="add-input" placeholder="Dodaj przedmiot..." required oninput="searchItems(this.value)">
+                    <div id="suggestionsItems" class="suggestions-box"></div>
+                </div>
+                <input type="hidden" id="itemImage" name="image">
+                <button type="submit" class="add-btn">DODAJ ITEM</button>
+            </form>
+        </div>
+
+        <div class="manual-add-form">
+            <form action="/kappa/add_quest" method="POST" autocomplete="off" style="display:flex; align-items:center; gap:10px;">
+                <div style="position:relative;">
+                    <input type="text" id="questName" name="name" class="add-input" placeholder="Dodaj quest..." required oninput="searchQuests(this.value)">
+                    <div id="suggestionsQuests" class="suggestions-box"></div>
+                </div>
+                <input type="hidden" id="questTrader" name="trader">
+                <button type="submit" class="add-btn">DODAJ QUEST</button>
+            </form>
+        </div>
+    </div>
+
+    <div style="max-width: 1000px; margin: 0 auto;">
+        <h2 class="section-title">Przedmioty (Collector)</h2>
+        <div class="kappa-grid" id="itemsGrid">
+            <% items.forEach(item => { 
+                let statusClass = item.is_collected === 1 ? 'in-progress' : (item.is_collected === 2 ? 'done' : 'todo');
+            %>
+                <form action="/kappa/toggle/<%= item.id %>" method="POST" id="form-<%= item.id %>" style="display:contents;" 
+                      class="filterable-item" data-status="<%= statusClass %>" data-new="<%= item.is_new %>">
+                    
+                    <div class="kappa-card <%= statusClass %>" onclick="submitAndSaveScroll('form-<%= item.id %>')">
+                        <% if (item.is_new && item.is_collected === 0) { %> 
+                            <div class="new-badge" onmouseover="vanish(this, '<%= item.id %>')" title="Najedź by usunąć">NEW!</div> 
+                        <% } %>
+                        <div class="status-icon-card check">✓</div>
+                        <img src="<%= item.image || 'https://via.placeholder.com/50' %>" alt="icon">
+                        <span class="searchable-text"><%= item.name %></span>
+                    </div>
+                </form>
+            <% }) %>
+        </div>
+    </div>
+
+    <div style="max-width: 1000px; margin: 0 auto;">
+        <h2 class="section-title">Questy</h2>
+        <table class="quest-table" id="questsTable">
+            <thead>
+                <tr>
+                    <th width="80" style="text-align:center;" class="no-sort">Akcja</th>
+                    <th width="50" onclick="sortTable(1)">LVL ↕</th>
+                    <th width="70" onclick="sortTable(2)" style="text-align:center;">Handlarz ↕</th> <th width="100" onclick="sortTable(3)">Mapa ↕</th>
+                    <th onclick="sortTable(4)">Nazwa Zadania ↕</th>
+                    <th class="no-sort">Wymagania</th>
+                </tr>
+            </thead>
+            <tbody id="questTableBody">
+                <% quests.forEach(quest => { 
+                    let statusClass = quest.is_collected === 1 ? 'in-progress' : (quest.is_collected === 2 ? 'done' : 'todo');
+                %>
+                    <tr class="quest-row <%= statusClass %>" data-status="<%= statusClass %>" data-new="<%= quest.is_new %>" 
+                        data-lvl="<%= quest.min_level %>" data-faction="<%= quest.faction %>">
+                        <td class="action-cell">
+                            <form action="/kappa/set_status/<%= quest.id %>" method="POST" onsubmit="saveScroll()">
+                                <input type="hidden" name="status" value="<%= quest.is_collected === 1 ? 0 : 1 %>">
+                                <button type="submit" class="btn-action prog <%= quest.is_collected === 1 ? 'active' : '' %>">⏳</button>
+                            </form>
+                            <form action="/kappa/set_status/<%= quest.id %>" method="POST" onsubmit="saveScroll()">
+                                <input type="hidden" name="status" value="<%= quest.is_collected === 2 ? 0 : 2 %>">
+                                <button type="submit" class="btn-action done <%= quest.is_collected === 2 ? 'active' : '' %>">✔</button>
+                            </form>
+                        </td>
+                        <td class="level-tag"><%= quest.min_level %></td>
+                        
+                        <td style="text-align:center;">
+                            <% if(quest.trader_image) { %>
+                                <img src="<%= quest.trader_image %>" class="trader-icon" title="<%= quest.trader %>" alt="<%= quest.trader %>">
+                            <% } else { %>
+                                <span class="trader-tag" style="font-size:0.7em"><%= quest.trader %></span>
+                            <% } %>
+                        </td>
+
+                        <td><span class="map-tag"><%= quest.map || 'Any' %></span></td>
+                        <td class="searchable-text">
+                            <% if (quest.is_new && quest.is_collected === 0) { %> 
+                                <span class="new-badge" style="position:static; display:inline-block; margin-right:5px;" onmouseover="vanish(this, '<%= quest.id %>')" title="Najedź by usunąć">NEW</span> 
+                            <% } %>
+                            
+                            <% if(quest.wiki_link) { %>
+                                <a href="<%= quest.wiki_link %>" target="_blank" class="quest-link"><%= quest.name %></a>
+                            <% } else { %>
+                                <%= quest.name %>
+                            <% } %>
+
+                            <% if(quest.faction === 'USEC') { %> <span style="color:#4da6ff; font-size:0.7em;">(USEC)</span> <% } %>
+                            <% if(quest.faction === 'BEAR') { %> <span style="color:#ff6666; font-size:0.7em;">(BEAR)</span> <% } %>
+                        </td>
+                        <td class="req-text"><%= quest.requirements %></td>
+                    </tr>
+                <% }) %>
+            </tbody>
+        </table>
+    </div>
+
+    <form action="/kappa/refresh" method="POST">
+        <button type="submit" class="refresh-btn">⟳ WYMUŚ AKTUALIZACJĘ Z API</button>
+    </form>
+
+    <script>
+        function vanish(element, id) {
+            element.style.opacity = '0';
+            setTimeout(() => { element.remove(); }, 300);
+            fetch('/api/unnew/' + id, { method: 'POST' });
+        }
+
+        let currentStatusFilter = 'all';
+        let myFaction = 'any';
+
+        function setFaction(faction, btn) {
+            myFaction = faction;
+            document.querySelectorAll('.faction-opt').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            localStorage.setItem('kappa_my_faction', faction);
+            applyFilters();
+        }
+
+        function setStatusFilter(status, btn) {
+            currentStatusFilter = status;
+            document.querySelectorAll('.status-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            localStorage.setItem('kappa_status_filter', status);
+            applyFilters();
+        }
+
+        function applyFilters() {
+            let textFilter = document.getElementById('pageFilter').value.toLowerCase();
+            localStorage.setItem('kappa_text_filter', textFilter);
+            
+            let myLevel = parseInt(document.getElementById('myLevel').value) || 1;
+            let levelEnabled = document.getElementById('levelToggle').checked;
+            localStorage.setItem('kappa_my_level', myLevel);
+            localStorage.setItem('kappa_level_toggle', levelEnabled);
+
+            filterElements(document.querySelectorAll('.filterable-item'), textFilter, myLevel, levelEnabled);
+            filterElements(document.querySelectorAll('.quest-row'), textFilter, myLevel, levelEnabled);
+        }
+
+        function filterElements(elements, textFilter, myLevel, levelEnabled) {
+            elements.forEach(el => {
+                let status = el.getAttribute('data-status');
+                let isNew = el.getAttribute('data-new') == '1';
+                let text = el.querySelector('.searchable-text') ? el.querySelector('.searchable-text').textContent.toLowerCase() : el.textContent.toLowerCase();
+                let lvl = parseInt(el.getAttribute('data-lvl')) || 0;
+                let faction = el.getAttribute('data-faction') || 'Any';
+
+                let statusMatch = false;
+                if(currentStatusFilter === 'all') statusMatch = true;
+                else if(currentStatusFilter === 'new') statusMatch = isNew && (status !== 'done');
+                else if(currentStatusFilter === 'progress' && status === 'in-progress') statusMatch = true;
+                else if(currentStatusFilter === status) statusMatch = true;
+
+                let textMatch = text.indexOf(textFilter) > -1;
+
+                let levelMatch = true;
+                if (levelEnabled && lvl > 0) {
+                    if (lvl > myLevel) levelMatch = false;
+                }
+
+                let factionMatch = true;
+                if (myFaction === 'USEC' && faction === 'BEAR') factionMatch = false;
+                if (myFaction === 'BEAR' && faction === 'USEC') factionMatch = false;
+
+                if (statusMatch && textMatch && levelMatch && factionMatch) {
+                    if(el.tagName === 'TR') el.style.display = "table-row"; else el.style.display = "contents";
+                } else {
+                    el.style.display = "none";
+                }
+            });
+        }
+
+        let sortDirection = true; 
+        function sortTable(columnIndex) {
+            const tableBody = document.getElementById("questTableBody");
+            const rows = Array.from(tableBody.querySelectorAll("tr"));
+            sortDirection = !sortDirection;
+
+            rows.sort((a, b) => {
+                let valA, valB;
+                // Trader (column 2) has an image now, so we need to sort by title attribute or alt
+                if (columnIndex === 2) {
+                    const imgA = a.children[columnIndex].querySelector('img');
+                    const imgB = b.children[columnIndex].querySelector('img');
+                    valA = imgA ? imgA.title.toLowerCase() : a.children[columnIndex].innerText.toLowerCase();
+                    valB = imgB ? imgB.title.toLowerCase() : b.children[columnIndex].innerText.toLowerCase();
+                } else {
+                    valA = a.children[columnIndex].innerText.toLowerCase();
+                    valB = b.children[columnIndex].innerText.toLowerCase();
+                }
+
+                if (columnIndex === 1) {
+                    return sortDirection ? (parseInt(valA) - parseInt(valB)) : (parseInt(valB) - parseInt(valA));
+                }
+
+                if (valA < valB) return sortDirection ? -1 : 1;
+                if (valA > valB) return sortDirection ? 1 : -1;
+                return 0;
+            });
+            rows.forEach(row => tableBody.appendChild(row));
+        }
+
+        document.addEventListener("DOMContentLoaded", function() {
+            const savedLevel = localStorage.getItem('kappa_my_level');
+            if (savedLevel) document.getElementById('myLevel').value = savedLevel;
+            
+            const savedToggle = localStorage.getItem('kappa_level_toggle');
+            if (savedToggle === 'true') document.getElementById('levelToggle').checked = true;
+
+            const savedFaction = localStorage.getItem('kappa_my_faction');
+            if (savedFaction) {
+                myFaction = savedFaction;
+                document.querySelectorAll('.faction-opt').forEach(b => {
+                    if(b.textContent.trim() === savedFaction || (savedFaction === 'any' && b.textContent.trim() === 'ALL')) b.classList.add('active');
+                    else b.classList.remove('active');
+                });
+            }
+
+            const savedText = localStorage.getItem('kappa_text_filter');
+            if (savedText) document.getElementById('pageFilter').value = savedText;
+            
+            const savedStatus = localStorage.getItem('kappa_status_filter');
+            if (savedStatus) {
+                currentStatusFilter = savedStatus;
+                document.querySelectorAll('.status-btn').forEach(b => {
+                    if(b.getAttribute('onclick').includes(`'${savedStatus}'`)) b.classList.add('active');
+                    else b.classList.remove('active');
+                });
+            }
+            const scrollPos = localStorage.getItem('scroll_pos');
+            if(scrollPos) { window.scrollTo(0, scrollPos); localStorage.removeItem('scroll_pos'); }
+            applyFilters();
+        });
+
+        function saveScroll() { localStorage.setItem('scroll_pos', window.scrollY); }
+        function submitAndSaveScroll(formId) { saveScroll(); document.getElementById(formId).submit(); }
+
+        const suggestionsItems = document.getElementById('suggestionsItems');
+        const itemNameInput = document.getElementById('itemName');
+        const itemImageInput = document.getElementById('itemImage');
+
+        async function searchItems(query) {
+            if (query.length < 2) { suggestionsItems.style.display = 'none'; return; }
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const items = await response.json();
+                suggestionsItems.innerHTML = '';
+                if (items.length > 0) {
+                    suggestionsItems.style.display = 'block';
+                    items.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'suggestion-item';
+                        div.innerHTML = `<img src="${item.image}" class="suggestion-img"> <span>${item.name}</span>`;
+                        div.onclick = () => { itemNameInput.value = item.name; itemImageInput.value = item.image; suggestionsItems.style.display = 'none'; };
+                        suggestionsItems.appendChild(div);
+                    });
+                } else { suggestionsItems.style.display = 'none'; }
+            } catch (error) { console.error(error); }
+        }
+
+        const suggestionsQuests = document.getElementById('suggestionsQuests');
+        const questNameInput = document.getElementById('questName');
+        const questTraderInput = document.getElementById('questTrader');
+
+        async function searchQuests(query) {
+            if (query.length < 2) { suggestionsQuests.style.display = 'none'; return; }
+            try {
+                const response = await fetch(`/api/search_tasks?q=${encodeURIComponent(query)}`);
+                const quests = await response.json();
+                suggestionsQuests.innerHTML = '';
+                if (quests.length > 0) {
+                    suggestionsQuests.style.display = 'block';
+                    quests.forEach(q => {
+                        const div = document.createElement('div');
+                        div.className = 'suggestion-item';
+                        div.innerHTML = `<span>${q.name} <small style="color:#777">(${q.trader})</small></span>`;
+                        div.onclick = () => { questNameInput.value = q.name; questTraderInput.value = q.trader; suggestionsQuests.style.display = 'none'; };
+                        suggestionsQuests.appendChild(div);
+                    });
+                } else { suggestionsQuests.style.display = 'none'; }
+            } catch (error) { console.error(error); }
+        }
+
+        document.addEventListener('click', function(e) { 
+            if (e.target !== itemNameInput) suggestionsItems.style.display = 'none';
+            if (e.target !== questNameInput) suggestionsQuests.style.display = 'none';
+        });
+    </script>
+</body>
+</html>

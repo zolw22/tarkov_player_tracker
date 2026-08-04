@@ -1,0 +1,5 @@
+node_modules/
+*.db
+_test/
+.claude/
+*.log

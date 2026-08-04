@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarkov Tracker</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: #1a1a1a;
+            --panel-2: #1e1e1e;
+            --border: #2c2c2c;
+            --border-soft: #383838;
+            --text-dim: #888;
+            --accent: #9a8c68;
+            --accent-soft: rgba(154,140,104,0.16);
+            --success: #4caf50;
+            --success-soft: rgba(76,175,80,0.14);
+            --danger: #e05252;
+            --danger-soft: rgba(224,82,82,0.14);
+            --warn: #ffb300;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --shadow: 0 6px 18px rgba(0,0,0,0.35);
+        }
+
+        * { box-sizing: border-box; }
+        body { background-color: var(--bg); color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 10px; margin: 0; padding-bottom: 50px; }
+
+        /* GÓRNY PASEK */
+        .top-status-bar {
+            background: var(--panel); border-bottom: 1px solid var(--border); padding: 10px 20px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;
+            position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 14px rgba(0,0,0,0.45); margin-bottom: 20px;
+            border-radius: 0 0 var(--radius) var(--radius);
+        }
+
+        .mode-switch, .view-switch {
+            display: flex; background: #000; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden;
+        }
+        .mode-opt, .view-opt { padding: 8px 12px; cursor: pointer; font-weight: bold; font-size: 0.85em; transition: 0.15s; color: #666; }
+        .mode-opt:hover, .view-opt:hover { background: #151515; color: #bbb; }
+
+        .mode-opt.active, .view-opt.active { background: #2c2c2c; color: #fff; }
+        .mode-opt.pvp.active { box-shadow: inset 0 -3px 0 #ff4444; }
+        .mode-opt.pve.active { box-shadow: inset 0 -3px 0 #4488ff; }
+        .view-opt.active { box-shadow: inset 0 -3px 0 var(--accent); }
+
+        .grand-total { font-size: 1.2em; font-weight: bold; color: var(--accent); display: flex; flex-direction: column; align-items: flex-end; }
+        .grand-total span { font-size: 0.6em; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+        .grand-total-val { font-family: 'Consolas', monospace; font-size: 1.3em; color: #fff; }
+
+        .nav-bar { display: flex; gap: 10px; justify-content: center; margin-bottom: 10px; }
+        .nav-link {
+            text-decoration: none; color: #888; padding: 8px 18px;
+            border: 1px solid var(--border-soft); border-radius: 999px; background: #161616;
+            font-weight: bold; text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.3px;
+            transition: all 0.15s;
+        }
+        .nav-link:hover { border-color: #555; color: #ccc; }
+        .nav-link.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+        .wipe-btn {
+            background: var(--danger-soft); color: #ff8a80; border: 1px solid rgba(224,82,82,0.35);
+            padding: 8px 16px; border-radius: 999px; font-weight: bold; text-transform: uppercase;
+            cursor: pointer; font-size: 0.75em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .wipe-btn:hover { background: var(--danger); color: #fff; }
+
+        .api-status-banner {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000;
+            background: #2a1414; color: #ff8a80; border-top: 1px solid rgba(224,82,82,0.4);
+            padding: 8px 15px; text-align: center; font-size: 0.85em; font-weight: bold;
+            display: none; box-shadow: 0 -2px 10px rgba(0,0,0,0.5);
+        }
+        .api-status-banner.show { display: block; }
+
+        .category-filters { display: flex; gap: 6px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
+        .cat-btn {
+            background: #161616; border: 1px solid var(--border-soft); color: #888; padding: 8px 16px;
+            cursor: pointer; border-radius: 999px; font-weight: 700; font-size: 0.78em; letter-spacing: 0.4px;
+            transition: all 0.15s;
+        }
+        .cat-btn:hover:not(.active) { border-color: #555; color: #ccc; }
+        .cat-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+        /* --- PASEK DODAWANIA --- */
+        .add-toolbar {
+            background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 14px; margin: 0 auto 20px auto; max-width: 1100px; box-shadow: var(--shadow);
+        }
+        .add-toolbar-form { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; justify-content: center; }
+        input, select, button { font-family: inherit; font-size: 1em; }
+        .field-search { position: relative; }
+        .field-search input {
+            background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: var(--radius-sm);
+            padding: 10px 12px 10px 34px; width: 200px; outline: none; transition: border-color 0.15s;
+        }
+        .field-search input:focus { border-color: var(--accent); }
+        .field-search::before {
+            content: "🔍"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+            font-size: 0.85em; opacity: 0.6; pointer-events: none;
+        }
+        .qty-field {
+            width: 64px; text-align: center; background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a;
+            border-radius: var(--radius-sm); padding: 10px 6px; outline: none;
+        }
+        .qty-field:focus { border-color: var(--accent); }
+
+        .segmented { display: flex; background: #000; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden; }
+        .segmented-opt { padding: 10px 14px; font-size: 0.8em; font-weight: 700; color: #888; cursor: pointer; background: transparent; border: none; transition: all 0.15s; }
+        .segmented-opt:hover:not(.active) { background: #161616; color: #bbb; }
+        .segmented-opt.active { background: var(--accent-soft); color: var(--accent); }
+
+        .fir-toggle { display: flex; align-items: center; gap: 6px; background: #161616; padding: 9px 14px; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); cursor: pointer; user-select: none; transition: all 0.15s; }
+        .fir-toggle input { display: none; }
+        .fir-toggle span { font-weight: 700; color: #666; font-size: 0.8em; letter-spacing: 0.5px; }
+        .fir-toggle:has(input:checked) { background: rgba(255,179,0,0.12); border-color: var(--warn); }
+        .fir-toggle input:checked + span { color: var(--warn); }
+
+        .btn-primary {
+            background: linear-gradient(180deg, #ada07a, #8d7f5c); color: #14120c; font-weight: 800;
+            border: none; border-radius: var(--radius-sm); padding: 10px 20px; cursor: pointer;
+            display: inline-flex; align-items: center; gap: 6px; text-transform: uppercase; font-size: 0.85em;
+            letter-spacing: 0.4px; transition: transform 0.12s ease, filter 0.12s ease;
+        }
+        .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .btn-primary:active { transform: translateY(0); filter: brightness(0.95); }
+
+        #suggestions { position: absolute; top: 100%; left: 0; margin-top: 6px; width: 280px; max-height: 220px; overflow-y: auto; background: #141414; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); z-index: 1000; display: none; box-shadow: var(--shadow); }
+        .suggestion-item { padding: 8px 10px; cursor: pointer; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #222; font-size: 0.95em; }
+        .suggestion-item:hover { background: #202020; }
+        .suggestion-item:last-child { border-bottom: none; }
+        .suggestion-img { width: 28px; height: 28px; object-fit: contain; }
+
+        /* --- SYSTEM WIDOKU (GRID / LIST) --- */
+        .container { display: flex; gap: 15px; }
+
+        .container.layout-list { flex-direction: column; align-items: center; }
+        .container.layout-list .column { width: 100%; max-width: 600px; }
+
+        .container.layout-grid { flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: flex-start; }
+        .container.layout-grid .column { width: 350px; flex-grow: 1; max-width: 450px; }
+
+        .column { background: var(--panel); padding: 10px; border-radius: var(--radius); border: 1px solid var(--border); transition: 0.3s; }
+        .cat-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 10px; }
+        .cat-title { color: #888; font-size: 1em; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+        .cat-total { font-family: 'Consolas', monospace; font-size: 0.9em; color: var(--accent); }
+        .empty-state { text-align: center; color: #555; font-size: 0.85em; padding: 24px 10px; font-style: italic; }
+
+        /* KARTA ITEMU */
+        .item-card {
+            background: var(--panel-2); margin: 8px 0; padding: 12px; border-radius: var(--radius);
+            border: 1px solid var(--border); position: relative; transition: all 0.18s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+        .item-card:hover { border-color: var(--border-soft); box-shadow: var(--shadow); }
+        .item-card.completed { background: #131c13; border-color: rgba(76,175,80,0.3); opacity: 0.75; }
+
+        .column.items-grid { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; align-content: flex-start; }
+        .column.items-grid .cat-header { width: 100%; flex-basis: 100%; margin-bottom: 10px; }
+
+        .column.items-grid .item-card {
+            width: 142px; margin: 0; padding: 8px;
+            display: flex; flex-direction: column; align-items: center; text-align: center;
+        }
+        .column.items-grid .item-card .card-header { flex-direction: column; width: 100%; }
+        .column.items-grid .name-wrapper { flex-direction: column; min-width: auto; }
+        .column.items-grid .item-thumb { width: 50px; height: 50px; margin: 0 0 5px 0; }
+        .column.items-grid .item-info { flex-direction: column; gap: 0; }
+        .column.items-grid .item-name { font-size: 0.88em; white-space: normal; height: 2.4em; overflow: hidden; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+        .column.items-grid .qty-stepper { transform: scale(0.88); margin: 6px auto 0; }
+        .column.items-grid .price-section { font-size: 0.7em; flex-direction: column; padding: 4px; width: 95%; }
+        .column.items-grid .price-info-label { display: none; }
+        .column.items-grid .category-select-styled { display: none; }
+        .column.items-grid .fir-chip { display: none; }
+        .column.items-grid .item-card:hover .fir-chip { display: inline-block; position: absolute; top: 6px; left: 6px; z-index: 10; }
+
+        .card-header { display: flex; align-items: center; width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+        .name-wrapper { display: flex; align-items: center; flex-grow: 1; overflow: hidden; min-width: 150px; }
+        .item-thumb { width: 36px; height: 36px; object-fit: contain; margin-right: 10px; }
+        .item-name { color: #ddd; font-weight: 700; font-size: 1.05em; }
+        .item-qty { font-weight: 700; color: var(--accent); margin-left: 6px; font-size: 1.15em; }
+
+        .price-section { background: #111; padding: 6px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); margin-top: 8px; display: flex; justify-content: space-between; align-items: center; font-family: 'Consolas', monospace; font-size: 0.85em; }
+        .price-unit { color: #888; }
+        .price-val { color: #ccc; }
+        .price-total { color: var(--accent); font-weight: bold; border-left: 1px solid var(--border); padding-left: 8px; margin-left: 8px; }
+
+        .category-select-styled {
+            background: #0f0f0f; color: #ccc; border: 1px solid #3a3a3a; padding: 5px 8px; font-size: 0.8em;
+            border-radius: var(--radius-sm); cursor: pointer; min-width: 92px; transition: border-color 0.15s;
+        }
+        .category-select-styled:hover, .category-select-styled:focus { border-color: var(--accent); }
+
+        .fir-chip {
+            padding: 4px 10px; font-size: 0.68em; font-weight: 800; letter-spacing: 0.5px; border-radius: 999px;
+            cursor: pointer; border: 1px solid #3a3a3a; background: #161616; color: #555; transition: all 0.15s;
+        }
+        .fir-chip:hover { border-color: #666; color: #999; }
+        .fir-chip.active { background: var(--warn); color: #000; border-color: var(--warn); box-shadow: 0 0 8px rgba(255,179,0,0.35); }
+
+        /* STEPPER ILOŚCI */
+        .qty-stepper {
+            display: flex; align-items: stretch; width: fit-content; margin: 10px 0 0 auto;
+            border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden; background: #0c0c0c;
+        }
+        .qty-btn {
+            width: 34px; background: #1c1c1c; color: #ccc; border: none; cursor: pointer;
+            font-size: 1.15em; font-weight: 700; line-height: 1; transition: all 0.15s;
+        }
+        .qty-btn:hover { background: #262626; }
+        .qty-minus:hover { color: var(--danger); }
+        .qty-plus:hover { color: var(--success); }
+        .qty-input {
+            width: 46px; text-align: center; border: none; border-left: 1px solid #333; border-right: 1px solid #333;
+            background: #0a0a0a; color: #fff; font-weight: 700; -moz-appearance: textfield; padding: 0;
+        }
+        .qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+        .completed-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+        .completed-actions .status-text { color: var(--success); font-weight: 700; font-size: 0.9em; display: flex; align-items: center; gap: 4px; }
+        .btn-icon-danger {
+            background: var(--danger-soft); color: var(--danger); border: 1px solid transparent; width: 32px; height: 32px;
+            border-radius: var(--radius-sm); cursor: pointer; font-size: 0.95em; transition: all 0.15s;
+        }
+        .btn-icon-danger:hover { background: var(--danger); color: #fff; }
+    </style>
+</head>
+<body>
+
+    <div class="top-status-bar">
+        <div style="display:flex; gap:10px;">
+            <div class="mode-switch">
+                <div class="mode-opt pvp active" onclick="setMode('pvp')">PvP</div>
+                <div class="mode-opt pve" onclick="setMode('pve')">PvE</div>
+            </div>
+
+            <div class="view-switch">
+                <div class="view-opt" title="Układ Kategorii: Lista" onclick="setLayout('list', this)">≣ Kat. Lista</div>
+                <div class="view-opt" title="Układ Kategorii: Siatka" onclick="setLayout('grid', this)">⊞ Kat. Siatka</div>
+            </div>
+            <div class="view-switch">
+                <div class="view-opt" title="Widok Itemów: Lista" onclick="setItemLayout('list', this)">≣ Itemy</div>
+                <div class="view-opt" title="Widok Itemów: Kafelki" onclick="setItemLayout('grid', this)">⊞ Itemy</div>
+            </div>
+        </div>
+
+        <div class="nav-bar" style="margin:0; align-items:center;">
+            <a href="/" class="nav-link active">Loot</a>
+            <a href="/kappa" class="nav-link">Kappa</a>
+            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy) oraz wyczyści tę listę lootu.\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
+                <button type="submit" class="wipe-btn" title="Reset postępu jak przy wipe'ie serwera">💀 Wipe</button>
+            </form>
+        </div>
+
+        <div class="grand-total">
+            <span>KOSZT CAŁKOWITY (AVG)</span>
+            <div id="grandTotalDisplay" class="grand-total-val">0 ₽</div>
+        </div>
+    </div>
+
+    <div class="category-filters">
+        <button class="cat-btn active" onclick="filterCategory('all', this)">WSZYSTKIE</button>
+        <button class="cat-btn" onclick="filterCategory('Hideout', this)">HIDEOUT</button>
+        <button class="cat-btn" onclick="filterCategory('Crafting', this)">CRAFTING</button>
+        <button class="cat-btn" onclick="filterCategory('Misje', this)">MISJE</button>
+    </div>
+
+    <div class="add-toolbar">
+        <form action="/add" method="POST" autocomplete="off" class="add-toolbar-form">
+            <div class="field-search">
+                <input type="text" id="itemName" name="name" placeholder="Szukaj przedmiotu..." required oninput="searchItems(this.value)">
+                <div id="suggestions"></div>
+            </div>
+            <input type="hidden" id="itemImage" name="image">
+            <input type="number" name="quantity" class="qty-field" value="1" min="1" required>
+
+            <input type="hidden" name="category" id="addCategoryValue" value="Hideout">
+            <div class="segmented" id="addCategorySegment">
+                <button type="button" class="segmented-opt active" onclick="selectAddCategory('Hideout', this)">Hideout</button>
+                <button type="button" class="segmented-opt" onclick="selectAddCategory('Crafting', this)">Crafting</button>
+                <button type="button" class="segmented-opt" onclick="selectAddCategory('Misje', this)">Misje</button>
+            </div>
+
+            <label class="fir-toggle"><input type="checkbox" name="fir"><span>FIR</span></label>
+            <button type="submit" class="btn-primary">+ Dodaj</button>
+        </form>
+    </div>
+
+    <div id="mainContainer" class="container layout-list">
+        <% Object.keys(categories).forEach(cat => { %>
+            <div class="column" data-category="<%= cat %>">
+                <div class="cat-header">
+                    <span class="cat-title"><%= cat %></span>
+                    <span class="cat-total" id="total-<%= cat %>">0 ₽</span>
+                </div>
+
+                <% categories[cat].forEach(item => {
+                    const isDone = item.quantity === 0;
+                %>
+                    <div class="item-card <%= isDone ? 'completed' : '' %>"
+                         data-id="<%= item.id %>"
+                         data-name="<%= item.name %>"
+                         data-qty="<%= item.quantity %>"
+                         data-fir="<%= item.is_fir %>"
+                         data-cat="<%= cat %>">
+
+                        <button type="button" class="fir-chip <%= item.is_fir ? 'active' : '' %>" title="Found in Raid" style="<%= isDone ? 'display:none' : '' %>" onclick="toggleFir(<%= item.id %>, this)">FIR</button>
+
+                        <div class="card-header">
+                            <div class="name-wrapper">
+                                <% if(item.image) { %> <img src="<%= item.image %>" class="item-thumb" alt=""> <% } %>
+                                <div class="item-info">
+                                    <span class="item-name"><%= item.name %></span>
+                                    <span class="item-qty" style="<%= isDone ? 'display:none' : '' %>">x<%= item.quantity %></span>
+                                </div>
+                            </div>
+
+                            <select class="category-select-styled" style="<%= isDone ? 'display:none' : '' %>" onchange="changeCategory(<%= item.id %>, this.value)">
+                                <option value="Hideout" <%= cat === 'Hideout' ? 'selected' : '' %>>Hideout</option>
+                                <option value="Crafting" <%= cat === 'Crafting' ? 'selected' : '' %>>Crafting</option>
+                                <option value="Misje" <%= cat === 'Misje' ? 'selected' : '' %>>Misje</option>
+                            </select>
+                        </div>
+
+                        <div class="price-section" id="price-<%= item.name.replace(/[^a-zA-Z0-9]/g, '') %>" style="<%= (isDone || item.is_fir) ? 'display:none' : '' %>">
+                            <span class="price-unit">...</span>
+                        </div>
+
+                        <div class="qty-stepper" style="<%= isDone ? 'display:none' : '' %>">
+                            <button type="button" class="qty-btn qty-minus" onclick="adjustQty(<%= item.id %>, -1, this)">−</button>
+                            <input type="number" class="qty-input" min="0" value="<%= item.quantity %>" onchange="setQty(<%= item.id %>, this)">
+                            <button type="button" class="qty-btn qty-plus" onclick="adjustQty(<%= item.id %>, 1, this)">+</button>
+                        </div>
+
+                        <div class="completed-actions" style="<%= isDone ? '' : 'display:none' %>">
+                            <span class="status-text">✓ Gotowe</span>
+                            <button type="button" class="btn-icon-danger" title="Usuń" onclick="deleteItem(<%= item.id %>, this)">🗑</button>
+                        </div>
+                    </div>
+                <% }) %>
+
+                <div class="empty-state" style="<%= categories[cat].length > 0 ? 'display:none' : '' %>">Brak przedmiotów w tej kategorii</div>
+            </div>
+        <% }) %>
+    </div>
+
+    <div id="apiStatusBanner" class="api-status-banner"></div>
+
+    <script>
+        let currentMode = 'pvp';
+        let priceCache = {};
+
+        // --- STATUS API tarkov.dev (banner + odliczanie do kolejnej próby) ---
+        let apiStatusData = null;
+        async function pollApiStatus() {
+            try { apiStatusData = await (await fetch('/api/status')).json(); }
+            catch (e) { apiStatusData = null; }
+        }
+        function formatCountdown(ms) {
+            if (ms <= 0) return "0s";
+            const totalSec = Math.ceil(ms / 1000);
+            const m = Math.floor(totalSec / 60), s = totalSec % 60;
+            return m > 0 ? `${m}m ${s}s` : `${s}s`;
+        }
+        function renderApiBanner() {
+            const banner = document.getElementById('apiStatusBanner');
+            if (!banner) return;
+            if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
+
+            const now = Date.now();
+            let text = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dodawanie po nazwie nadal działa.`;
+            if (apiStatusData.nextRetryAt && apiStatusData.nextRetryAt > now) {
+                text += ` Kolejna próba za ${formatCountdown(apiStatusData.nextRetryAt - now)}.`;
+            } else if (apiStatusData.nextAutoSyncAt && apiStatusData.nextAutoSyncAt > now) {
+                text += ` Kolejna automatyczna synchronizacja cen za ${formatCountdown(apiStatusData.nextAutoSyncAt - now)}.`;
+            }
+            banner.textContent = text;
+            banner.classList.add('show');
+        }
+        setInterval(renderApiBanner, 1000);
+        setInterval(pollApiStatus, 5000);
+        pollApiStatus().then(renderApiBanner);
+
+        // --- ZARZĄDZANIE WIDOKIEM (LAYOUT) ---
+        function setLayout(type, btn) {
+            const container = document.getElementById('mainContainer');
+            container.classList.remove('layout-list', 'layout-grid');
+            container.classList.add('layout-' + type);
+            localStorage.setItem('tarkov_cat_layout', type);
+
+            if(btn) {
+                btn.parentNode.querySelectorAll('.view-opt').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+        }
+
+        function setItemLayout(type, btn) {
+            const columns = document.querySelectorAll('.column');
+            columns.forEach(col => {
+                if(type === 'grid') col.classList.add('items-grid');
+                else col.classList.remove('items-grid');
+            });
+            localStorage.setItem('tarkov_item_layout', type);
+
+            if(btn) {
+                btn.parentNode.querySelectorAll('.view-opt').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+        }
+
+        // --- INICJALIZACJA ---
+        document.addEventListener("DOMContentLoaded", function() {
+            const savedMode = localStorage.getItem('tarkov_mode');
+            if(savedMode) setMode(savedMode); else setMode('pvp');
+
+            const savedCatLayout = localStorage.getItem('tarkov_cat_layout') || 'list';
+            const catBtns = document.querySelectorAll('.view-switch')[0].querySelectorAll('.view-opt');
+            setLayout(savedCatLayout, savedCatLayout === 'list' ? catBtns[0] : catBtns[1]);
+
+            const savedItemLayout = localStorage.getItem('tarkov_item_layout') || 'list';
+            const itemBtns = document.querySelectorAll('.view-switch')[1].querySelectorAll('.view-opt');
+            setItemLayout(savedItemLayout, savedItemLayout === 'list' ? itemBtns[0] : itemBtns[1]);
+
+            updateEmptyStates();
+            fetchPrices();
+            setInterval(fetchPrices, 600000);
+        });
+
+        function setMode(mode) {
+            currentMode = mode;
+            localStorage.setItem('tarkov_mode', mode);
+            document.querySelectorAll('.mode-opt').forEach(m => m.classList.remove('active'));
+            document.querySelector(`.mode-opt.${mode}`).classList.add('active');
+            renderPrices();
+        }
+
+        async function fetchPrices() {
+            try {
+                const res = await fetch('/api/prices');
+                priceCache = await res.json();
+                renderPrices();
+            } catch (e) { console.error("Błąd pobierania cen", e); }
+        }
+
+        function formatPrice(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'm';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+            return num;
+        }
+        function formatFullPrice(num) {
+            return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+        }
+
+        function renderPrices() {
+            let grandTotal = 0;
+            let categoryTotals = { 'Hideout': 0, 'Crafting': 0, 'Misje': 0 };
+
+            document.querySelectorAll('.item-card').forEach(card => {
+                const name = card.dataset.name;
+                const qty = parseInt(card.dataset.qty);
+                const fir = parseInt(card.dataset.fir);
+                const cat = card.dataset.cat;
+                const priceDiv = document.getElementById(`price-${name.replace(/[^a-zA-Z0-9]/g, '')}`);
+
+                if (qty === 0 || fir === 1) return;
+
+                if (priceCache[name]) {
+                    let baseAvg = priceCache[name].avg || 0;
+                    let baseMin = priceCache[name].min || 0;
+                    let baseMax = priceCache[name].max || 0;
+
+                    if (currentMode === 'pve') {
+                        baseAvg = Math.round(baseAvg * 1.5);
+                        baseMin = Math.round(baseMin * 1.5);
+                        baseMax = Math.round(baseMax * 1.5);
+                    }
+
+                    const totalForStack = baseAvg * qty;
+                    grandTotal += totalForStack;
+                    if(categoryTotals[cat] !== undefined) categoryTotals[cat] += totalForStack;
+
+                    if (priceDiv) {
+                        priceDiv.innerHTML = `
+                            <div>
+                                <span class="price-info-label">Min:</span><span class="price-val">${formatPrice(baseMin)}</span>
+                                <span class="price-info-label" style="margin-left:5px;">Avg:</span><span class="price-val">${formatPrice(baseAvg)}</span>
+                                <span class="price-info-label" style="margin-left:5px;">Max:</span><span class="price-val">${formatPrice(baseMax)}</span>
+                            </div>
+                            <div class="price-total">${formatPrice(totalForStack)} ₽</div>
+                        `;
+                    }
+                } else {
+                    if (priceDiv) priceDiv.innerHTML = `<span style="color:#666">Brak ceny</span>`;
+                }
+            });
+
+            document.getElementById('grandTotalDisplay').innerText = formatFullPrice(grandTotal) + " ₽";
+            for (const [cat, total] of Object.entries(categoryTotals)) {
+                const el = document.getElementById(`total-${cat}`);
+                if(el) el.innerText = total > 0 ? formatFullPrice(total) + " ₽" : "";
+            }
+        }
+
+        function filterCategory(cat, btn) {
+            document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            let columns = document.querySelectorAll('.column');
+            columns.forEach(col => {
+                if (cat === 'all' || col.getAttribute('data-category') === cat) {
+                    col.style.display = 'block';
+                } else {
+                    col.style.display = 'none';
+                }
+            });
+        }
+
+        // --- SEGMENTED CONTROL (kategoria w formularzu dodawania) ---
+        function selectAddCategory(cat, btn) {
+            document.getElementById('addCategoryValue').value = cat;
+            btn.parentNode.querySelectorAll('.segmented-opt').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        }
+
+        // --- KARTY ITEMÓW: stepper ilości, FIR, kategoria, usuwanie (AJAX) ---
+        function cardStateSync(card, quantity) {
+            card.dataset.qty = quantity;
+            const isDone = quantity <= 0;
+            card.classList.toggle('completed', isDone);
+
+            const stepper = card.querySelector('.qty-stepper');
+            const doneBlock = card.querySelector('.completed-actions');
+            const firChip = card.querySelector('.fir-chip');
+            const catSelect = card.querySelector('.category-select-styled');
+            const qtyLabel = card.querySelector('.item-qty');
+            const qtyInput = card.querySelector('.qty-input');
+            const priceSection = card.querySelector('.price-section');
+            const isFir = card.dataset.fir === '1';
+
+            if (stepper) stepper.style.display = isDone ? 'none' : '';
+            if (doneBlock) doneBlock.style.display = isDone ? '' : 'none';
+            if (firChip) firChip.style.display = isDone ? 'none' : '';
+            if (catSelect) catSelect.style.display = isDone ? 'none' : '';
+            if (qtyLabel) { qtyLabel.style.display = isDone ? 'none' : ''; qtyLabel.textContent = 'x' + quantity; }
+            if (qtyInput) qtyInput.value = quantity;
+            if (priceSection) priceSection.style.display = (isDone || isFir) ? 'none' : '';
+
+            renderPrices();
+        }
+
+        async function adjustQty(id, delta, btn) {
+            const card = btn.closest('.item-card');
+            const current = parseInt(card.dataset.qty) || 0;
+            cardStateSync(card, Math.max(0, current + delta));
+            try {
+                const res = await fetch(`/api/items/${id}/quantity`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ delta })
+                });
+                const data = await res.json();
+                cardStateSync(card, data.quantity);
+            } catch (e) { console.error(e); }
+        }
+
+        async function setQty(id, input) {
+            const card = input.closest('.item-card');
+            let value = parseInt(input.value);
+            if (isNaN(value) || value < 0) value = 0;
+            cardStateSync(card, value);
+            try {
+                const res = await fetch(`/api/items/${id}/quantity`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ value })
+                });
+                const data = await res.json();
+                cardStateSync(card, data.quantity);
+            } catch (e) { console.error(e); }
+        }
+
+        async function toggleFir(id, btn) {
+            const card = btn.closest('.item-card');
+            try {
+                const res = await fetch(`/api/items/${id}/fir`, { method: 'POST' });
+                const data = await res.json();
+                card.dataset.fir = data.is_fir;
+                btn.classList.toggle('active', !!data.is_fir);
+                const priceSection = card.querySelector('.price-section');
+                const isDone = card.classList.contains('completed');
+                if (priceSection) priceSection.style.display = (isDone || data.is_fir) ? 'none' : '';
+                renderPrices();
+            } catch (e) { console.error(e); }
+        }
+
+        async function changeCategory(id, newCat) {
+            const card = document.querySelector(`.item-card[data-id="${id}"]`);
+            const oldCat = card.dataset.cat;
+            if (newCat === oldCat) return;
+            try {
+                const res = await fetch(`/api/items/${id}/category`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ category: newCat })
+                });
+                const data = await res.json();
+                card.dataset.cat = data.category;
+                const targetColumn = document.querySelector(`.column[data-category="${data.category}"]`);
+                if (targetColumn) targetColumn.insertBefore(card, targetColumn.querySelector('.empty-state'));
+                updateEmptyStates();
+                renderPrices();
+            } catch (e) { console.error(e); }
+        }
+
+        async function deleteItem(id, btn) {
+            const card = btn.closest('.item-card');
+            card.style.opacity = '0';
+            card.style.transform = 'scale(0.95)';
+            try {
+                await fetch(`/api/items/${id}/delete`, { method: 'POST' });
+                setTimeout(() => { card.remove(); updateEmptyStates(); renderPrices(); }, 180);
+            } catch (e) { console.error(e); card.style.opacity = ''; card.style.transform = ''; }
+        }
+
+        function updateEmptyStates() {
+            document.querySelectorAll('.column').forEach(col => {
+                const hasItems = col.querySelector('.item-card') !== null;
+                const empty = col.querySelector('.empty-state');
+                if (empty) empty.style.display = hasItems ? 'none' : '';
+            });
+        }
+
+        const suggestionsBox = document.getElementById('suggestions');
+        const nameInput = document.getElementById('itemName');
+        const imageInput = document.getElementById('itemImage');
+        async function searchItems(query) {
+            if (query.length < 2) { suggestionsBox.style.display = 'none'; return; }
+            try {
+                const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+                const items = await response.json();
+                suggestionsBox.innerHTML = '';
+                if (items.length > 0) {
+                    suggestionsBox.style.display = 'block';
+                    items.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'suggestion-item';
+                        div.innerHTML = `<img src="${item.image}" class="suggestion-img"> <span>${item.name}</span>`;
+                        div.onclick = () => { nameInput.value = item.name; imageInput.value = item.image; suggestionsBox.style.display = 'none'; };
+                        suggestionsBox.appendChild(div);
+                    });
+                } else { suggestionsBox.style.display = 'none'; }
+            } catch (error) { console.error(error); }
+        }
+        document.addEventListener('click', function(e) { if (e.target !== nameInput) suggestionsBox.style.display = 'none'; });
+    </script>
+</body>
+</html>
