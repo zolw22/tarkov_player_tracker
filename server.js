@@ -71,7 +71,8 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_min INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_avg INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_max INTEGER DEFAULT 0",
-                    "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'"
+                    "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'",
+                    "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0"
                 ];
                 let done = 0;
                 migrations.forEach(sql => db.run(sql, () => { done++; if (done === migrations.length) startBackgroundTasks(); }));
@@ -346,7 +347,7 @@ async function syncKappaWithAPI() {
 
 // --- ROUTY ---
 app.get('/', (req, res) => {
-    db.all("SELECT * FROM items ORDER BY (quantity = 0), id DESC", [], (err, rows) => {
+    db.all("SELECT * FROM items ORDER BY (quantity = 0), sort_order ASC, id DESC", [], (err, rows) => {
         const categories = { 'Hideout': rows.filter(r => r.category === 'Hideout'), 'Crafting': rows.filter(r => r.category === 'Crafting'), 'Misje': rows.filter(r => r.category === 'Misje') };
         res.render('index', { categories });
     });
@@ -421,6 +422,20 @@ app.post('/api/items/:id/category', (req, res) => {
 });
 app.post('/api/items/:id/delete', (req, res) => {
     db.run("DELETE FROM items WHERE id = ?", [req.params.id], () => res.json({ ok: true }));
+});
+
+// zapisuje ręczną kolejność itemów po przeciągnięciu (drag&drop) - "order" to lista id
+// przecinkami, w kolejności w jakiej mają się teraz wyświetlać
+app.post('/api/items/reorder', (req, res) => {
+    const ids = String(req.body.order || '').split(',').map(Number).filter(n => !isNaN(n));
+    if (ids.length === 0) return res.status(400).json({ error: 'invalid order' });
+    db.serialize(() => {
+        db.run("BEGIN TRANSACTION");
+        const stmt = db.prepare("UPDATE items SET sort_order = ? WHERE id = ?");
+        ids.forEach((id, idx) => stmt.run(idx, id));
+        stmt.finalize();
+        db.run("COMMIT", () => res.json({ ok: true }));
+    });
 });
 
 // --- WIPE (reset postępu, jak przy wipe'ie serwera w grze) ---

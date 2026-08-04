@@ -191,6 +191,15 @@
         .fir-chip:hover { border-color: #666; color: #999; }
         .fir-chip.active { background: var(--warn); color: #000; border-color: var(--warn); box-shadow: 0 0 8px rgba(255,179,0,0.35); }
 
+        .drag-handle {
+            position: absolute; top: 8px; right: 8px; z-index: 10; cursor: grab; user-select: none;
+            color: #555; font-size: 0.9em; letter-spacing: -2px; padding: 2px 4px; border-radius: 4px; transition: color 0.15s, background 0.15s;
+        }
+        .drag-handle:hover { color: #ccc; background: #2a2a2a; }
+        .drag-handle:active { cursor: grabbing; }
+        .item-card.dragging { opacity: 0.35; }
+        .column.items-grid .drag-handle { top: 4px; right: 4px; }
+
         /* STEPPER ILOŚCI */
         .qty-stepper {
             display: flex; align-items: stretch; width: fit-content; margin: 10px 0 0 auto;
@@ -305,6 +314,7 @@
                          data-cat="<%= cat %>">
 
                         <button type="button" class="fir-chip <%= item.is_fir ? 'active' : '' %>" title="Found in Raid" style="<%= isDone ? 'display:none' : '' %>" onclick="toggleFir(<%= item.id %>, this)">FIR</button>
+                        <span class="drag-handle" draggable="true" title="Przeciągnij, żeby zmienić kolejność">⋮⋮</span>
 
                         <div class="card-header">
                             <div class="name-wrapper">
@@ -422,6 +432,7 @@
             setItemLayout(savedItemLayout, savedItemLayout === 'list' ? itemBtns[0] : itemBtns[1]);
 
             updateEmptyStates();
+            initDragAndDrop();
             fetchPrices();
             setInterval(fetchPrices, 600000);
         });
@@ -631,6 +642,53 @@
                 const empty = col.querySelector('.empty-state');
                 if (empty) empty.style.display = hasItems ? 'none' : '';
             });
+        }
+
+        // --- RĘCZNA KOLEJNOŚĆ ITEMÓW (przeciągnij za uchwyt ⋮⋮, tylko w obrębie tej samej kategorii) ---
+        let draggedCard = null;
+
+        function initDragAndDrop() {
+            document.querySelectorAll('.item-card').forEach(card => {
+                const handle = card.querySelector('.drag-handle');
+                if (!handle) return;
+
+                handle.addEventListener('dragstart', (e) => {
+                    draggedCard = card;
+                    card.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', card.dataset.id);
+                });
+                handle.addEventListener('dragend', () => {
+                    card.classList.remove('dragging');
+                    draggedCard = null;
+                });
+
+                card.addEventListener('dragover', (e) => {
+                    if (!draggedCard || draggedCard === card) return;
+                    const column = card.closest('.column');
+                    if (!column || !column.contains(draggedCard)) return; // tylko wewnątrz tej samej kategorii
+                    e.preventDefault();
+                    const rect = card.getBoundingClientRect();
+                    const before = (e.clientY - rect.top) < rect.height / 2;
+                    column.insertBefore(draggedCard, before ? card : card.nextSibling);
+                });
+                card.addEventListener('drop', (e) => {
+                    if (!draggedCard) return;
+                    e.preventDefault();
+                    persistOrder(card.closest('.column'));
+                });
+            });
+        }
+
+        async function persistOrder(column) {
+            if (!column) return;
+            const ids = Array.from(column.querySelectorAll('.item-card')).map(c => c.dataset.id);
+            try {
+                await fetch('/api/items/reorder', {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ order: ids.join(',') })
+                });
+            } catch (e) { console.error(e); }
         }
 
         const suggestionsBox = document.getElementById('suggestions');
