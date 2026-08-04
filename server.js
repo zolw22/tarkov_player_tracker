@@ -8,8 +8,12 @@ const fs = require('fs');
 
 const app = express();
 const PORT = 9999;
-const VERSION = "3.3";
+const VERSION = "3.4";
 const AUTHOR = "ZOLW22";
+
+// tarkov.dev wymaga teraz unikalnego, identyfikującego projekt User-Agenta przy każdym
+// requeście (GraphQL i JSON API) - inaczej ryzyko zablokowania jako podejrzany ruch.
+const PROJECT_UA = `TarkovPlayerTracker/${VERSION} (+https://github.com/zolw22/tarkov_player_tracker)`;
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
@@ -120,7 +124,7 @@ const PERMANENT_ERROR_STATUSES = [400, 401, 403, 404];
 async function tarkovApiRequest(payload, { retries = 4, baseDelayMs = 3000 } = {}) {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
-            const response = await axios.post('https://api.tarkov.dev/graphql', payload, { headers: { 'User-Agent': 'NodeJS TarkovTracker/1.0' }, timeout: 15000 });
+            const response = await axios.post('https://api.tarkov.dev/graphql', payload, { headers: { 'User-Agent': PROJECT_UA }, timeout: 15000 });
             apiStatus.online = true;
             apiStatus.lastError = null;
             apiStatus.nextRetryAt = null;
@@ -144,39 +148,106 @@ async function tarkovApiRequest(payload, { retries = 4, baseDelayMs = 3000 } = {
     }
 }
 
+// --- JSON API (json.tarkov.dev) - zapasowe źródło, gdy GraphQL (api.tarkov.dev) pada ---
+// UWAGA: tarkov.dev czasem serwuje pod tym adresem dane-placeholder (name === "<id> Name"),
+// kiedy ich backend danych gry jest wyłączony - traktujemy to jak brak danych (rzucamy błąd),
+// żeby nigdy nie nadpisać realnego cache śmieciowymi nazwami.
+function looksLikePlaceholder(name, id) {
+    return typeof name === 'string' && typeof id === 'string' && name.startsWith(id);
+}
+
+async function fetchJsonApi(path) {
+    const res = await axios.get(`https://json.tarkov.dev${path}`, { headers: { 'User-Agent': PROJECT_UA }, timeout: 20000 });
+    return res.data.data;
+}
+
+async function fetchItemsFromJsonApi() {
+    const data = await fetchJsonApi('/regular/items');
+    const list = Object.values(data.items || {});
+    if (list.length === 0) throw new Error('json.tarkov.dev: pusta lista itemów');
+    if (looksLikePlaceholder(list[0].name, list[0].id)) throw new Error('json.tarkov.dev zwraca dane-placeholder (ich backend danych gry jest wyłączony)');
+    return list;
+}
+
+async function fetchTasksFromJsonApi() {
+    const [tasksData, tradersData] = await Promise.all([fetchJsonApi('/regular/tasks'), fetchJsonApi('/regular/traders')]);
+    const list = Object.values(tasksData.tasks || {});
+    if (list.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
+    if (looksLikePlaceholder(list[0].name, list[0].id)) throw new Error('json.tarkov.dev zwraca dane-placeholder (ich backend danych gry jest wyłączony)');
+
+    const traderById = {};
+    Object.values(tradersData || {}).forEach(t => { if (t && t.id) traderById[t.id] = { name: t.name, imageLink: t.imageLink || '' }; });
+    const taskNameById = {};
+    list.forEach(t => { taskNameById[t.id] = t.name; });
+
+    // nazwy/ikony itemów w objectives ("giveItem") rozwiązujemy przez lokalny cache -
+    // JSON API zwraca tam tylko id itemu, nie jego nazwę
+    return new Promise((resolve) => {
+        db.all("SELECT id, name, image FROM tarkov_items_cache", [], (err, itemRows) => {
+            const itemById = {};
+            (itemRows || []).forEach(r => { itemById[r.id] = { name: r.name, iconLink: r.image }; });
+
+            resolve(list.map(t => {
+                const objectives = (t.objectives || [])
+                    .filter(o => (o.type === 'giveItem' || o.type === 'plantItem') && Array.isArray(o.items) && o.items.length > 0)
+                    .map(o => {
+                        const known = itemById[o.items[0]];
+                        return { item: known ? { name: known.name, iconLink: known.iconLink } : null };
+                    });
+                return {
+                    id: t.id,
+                    name: t.name,
+                    kappaRequired: !!t.kappaRequired,
+                    minPlayerLevel: t.minPlayerLevel || 0,
+                    factionName: t.factionName || 'Any',
+                    trader: traderById[t.trader] || null,
+                    map: null,
+                    wikiLink: t.wikiLink || '',
+                    objectives,
+                    taskRequirements: (t.taskRequirements || []).map(r => ({ task: { name: taskNameById[r.task] || '?' } }))
+                };
+            }));
+        });
+    });
+}
+
 // --- CACHE & CENY ---
 async function updateItemCache() {
     console.log("💰 [MARKET] Sprawdzanie aktualnych cen (Flea Market)...");
     apiStatus.nextAutoSyncAt = Date.now() + PRICES_INTERVAL;
 
-    db.get("SELECT count(*) as count FROM tarkov_items_cache", [], async (err, row) => {
-        const isCacheEmpty = (!err && row.count < 1000);
-        
+    let items;
+    try {
+        const response = await tarkovApiRequest({
+            query: `{ items(lang: en) { id name shortName iconLink lastLowPrice avg24hPrice } }`
+        });
+        items = response.data.data ? response.data.data.items : null;
+    } catch (graphqlErr) {
+        console.warn("⚠️ [MARKET] GraphQL zawiódł, próbuję json.tarkov.dev...");
         try {
-            const response = await tarkovApiRequest({
-                query: `{ items(lang: en) { id name shortName iconLink lastLowPrice avg24hPrice } }`
-            });
-            
-            if(response.data.data) {
-                const items = response.data.data.items;
-                db.serialize(() => {
-                    db.run("BEGIN TRANSACTION");
-                    const stmt = db.prepare(`INSERT OR REPLACE INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-                    
-                    items.forEach(i => {
-                        const min = i.lastLowPrice || 0;
-                        const avg = i.avg24hPrice || 0;
-                        const max = Math.round(avg * 1.2); 
-                        stmt.run(i.id, i.name, i.shortName, i.iconLink, min, avg, max);
-                    });
-                    
-                    stmt.finalize();
-                    db.run("COMMIT", () => {
-                        console.log(`✅ [MARKET] Ceny zaktualizowane pomyślnie (${items.length} przedmiotów).`);
-                    });
-                });
-            }
-        } catch (e) { console.error("❌ [ERROR] Błąd API Cen:", e.message); }
+            items = await fetchItemsFromJsonApi();
+        } catch (jsonErr) {
+            console.error("❌ [ERROR] Błąd API Cen (GraphQL i JSON):", jsonErr.message);
+            return;
+        }
+    }
+    if (!items) return;
+
+    db.serialize(() => {
+        db.run("BEGIN TRANSACTION");
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+
+        items.forEach(i => {
+            const min = i.lastLowPrice || 0;
+            const avg = i.avg24hPrice || 0;
+            const max = Math.round(avg * 1.2);
+            stmt.run(i.id, i.name, i.shortName, i.iconLink, min, avg, max);
+        });
+
+        stmt.finalize();
+        db.run("COMMIT", () => {
+            console.log(`✅ [MARKET] Ceny zaktualizowane pomyślnie (${items.length} przedmiotów).`);
+        });
     });
 }
 
@@ -191,12 +262,22 @@ async function syncKappaWithAPI() {
             taskRequirements { task { name } }
         }
     }`;
+    let allTasks;
     try {
         const response = await tarkovApiRequest({ query });
-        if (!response.data || !response.data.data) return;
-        
-        const allTasks = response.data.data.tasks;
-        
+        allTasks = response.data.data ? response.data.data.tasks : null;
+    } catch (graphqlErr) {
+        console.warn("⚠️ [KAPPA] GraphQL zawiódł, próbuję json.tarkov.dev...");
+        try {
+            allTasks = await fetchTasksFromJsonApi();
+        } catch (jsonErr) {
+            console.error("❌ [API ERROR] (GraphQL i JSON):", jsonErr.message);
+            return;
+        }
+    }
+    if (!allTasks) return;
+
+    try {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION");
             const stmt = db.prepare("INSERT OR REPLACE INTO tarkov_tasks_cache (id, name, trader) VALUES (?, ?, ?)");
