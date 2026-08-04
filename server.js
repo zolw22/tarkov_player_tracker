@@ -70,7 +70,8 @@ function initializeDatabase() {
                     "ALTER TABLE kappa_tracker ADD COLUMN trader_image TEXT DEFAULT ''",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_min INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_avg INTEGER DEFAULT 0",
-                    "ALTER TABLE tarkov_items_cache ADD COLUMN price_max INTEGER DEFAULT 0"
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN price_max INTEGER DEFAULT 0",
+                    "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'"
                 ];
                 let done = 0;
                 migrations.forEach(sql => db.run(sql, () => { done++; if (done === migrations.length) startBackgroundTasks(); }));
@@ -311,11 +312,14 @@ async function syncKappaWithAPI() {
         const collectorTask = allTasks.find(t => t.name === "Collector");
         const fenceImage = collectorTask && collectorTask.trader ? collectorTask.trader.imageLink : '';
         const collectorItems = collectorTask ? collectorTask.objectives.filter(obj => obj.item).map(obj => ({
-            name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: ''
+            name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: '', reqNames: '[]'
         })) : [];
-        const requiredTasks = allTasks.filter(t => t.kappaRequired === true).map(t => ({
-            name: t.name, image: '', type: 'quest', min_level: t.minPlayerLevel || 0, trader: t.trader ? t.trader.name : '?', trader_image: t.trader ? t.trader.imageLink : '', faction: t.factionName || 'Any', map: t.map ? t.map.name : 'Any', wiki_link: t.wikiLink || '', req: t.taskRequirements.map(r => r.task.name).join(", ") ? `Wymaga: ${t.taskRequirements.map(r => r.task.name).join(", ")}` : 'Startowy'
-        }));
+        const requiredTasks = allTasks.filter(t => t.kappaRequired === true).map(t => {
+            const reqNames = t.taskRequirements.map(r => r.task.name);
+            return {
+                name: t.name, image: '', type: 'quest', min_level: t.minPlayerLevel || 0, trader: t.trader ? t.trader.name : '?', trader_image: t.trader ? t.trader.imageLink : '', faction: t.factionName || 'Any', map: t.map ? t.map.name : 'Any', wiki_link: t.wikiLink || '', req: reqNames.length ? `Wymaga: ${reqNames.join(", ")}` : 'Startowy', reqNames: JSON.stringify(reqNames)
+            };
+        });
         
         console.log(`🔎 [KAPPA] Znaleziono: ${collectorItems.length} przedmiotów streamera i ${requiredTasks.length} wymaganych questów.`);
         
@@ -325,9 +329,9 @@ async function syncKappaWithAPI() {
         const upsert = (item) => new Promise((resolve) => {
             db.get("SELECT id FROM kappa_tracker WHERE name = ?", [item.name], (err, row) => {
                 if (!row) {
-                    db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image], () => resolve(1));
+                    db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image, requirement_names) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames], () => resolve(1));
                 } else {
-                    db.run(`UPDATE kappa_tracker SET min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=? WHERE id=?`, [item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, row.id], () => resolve(0));
+                    db.run(`UPDATE kappa_tracker SET min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=?, requirement_names=? WHERE id=?`, [item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, row.id], () => resolve(0));
                 }
             });
         });
@@ -351,12 +355,23 @@ app.get('/', (req, res) => {
 app.get('/kappa', (req, res) => {
     db.all(`SELECT * FROM kappa_tracker ORDER BY type ASC, is_collected ASC, min_level ASC`, [], (err, rows) => {
         const items = rows.filter(r => r.type === 'item');
-        const quests = rows.filter(r => r.type === 'quest');
+        // questy oznaczone jako zrobione po nazwie - do sprawdzania, czy prerekwizyty questa są spełnione
+        const doneNames = new Set(rows.filter(r => r.is_collected === 2).map(r => r.name));
+
+        const quests = rows.filter(r => r.type === 'quest').map(q => {
+            let reqNames = [];
+            try { reqNames = JSON.parse(q.requirement_names || '[]'); } catch (e) { reqNames = []; }
+            const locked = q.is_collected === 0 && reqNames.length > 0 && !reqNames.every(n => doneNames.has(n));
+            return { ...q, locked };
+        });
+
+        const countLocked = quests.filter(q => q.locked).length;
         const stats = {
             itemsDone: items.filter(i => i.is_collected === 2).length, itemsTotal: items.length, itemsPercent: items.length > 0 ? Math.round((items.filter(i => i.is_collected === 2).length / items.length) * 100) : 0,
             questsDone: quests.filter(q => q.is_collected === 2).length, questsTotal: quests.length, questsPercent: quests.length > 0 ? Math.round((quests.filter(q => q.is_collected === 2).length / quests.length) * 100) : 0,
             totalPercent: rows.length > 0 ? Math.round((rows.filter(r => r.is_collected === 2).length / rows.length) * 100) : 0,
-            countNew: rows.filter(r => r.is_new === 1 && r.is_collected !== 2).length, countTodo: rows.filter(r => r.is_collected === 0).length, countProgress: rows.filter(r => r.is_collected === 1).length, countDone: rows.filter(r => r.is_collected === 2).length, totalAll: rows.length
+            countNew: rows.filter(r => r.is_new === 1 && r.is_collected !== 2).length, countTodo: items.filter(i => i.is_collected === 0).length + quests.filter(q => q.is_collected === 0 && !q.locked).length, countProgress: rows.filter(r => r.is_collected === 1).length, countDone: rows.filter(r => r.is_collected === 2).length, totalAll: rows.length,
+            countLocked
         };
         res.render('kappa', { items, quests, stats });
     });

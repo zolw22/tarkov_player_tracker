@@ -76,6 +76,7 @@
             .dot-prog { background: #ff9800; }
             .dot-done { background: #4caf50; }
             .dot-new { background: #d32f2f; }
+            .dot-locked { background: #666; }
 
             .add-forms-container { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-bottom: 30px; }
             .manual-add-form { background: #1e1e1e; padding: 10px; border-radius: 4px; display: flex; gap: 10px; align-items: center; border: 1px solid #333; position: relative; }
@@ -100,11 +101,15 @@
             .quest-row.done { opacity: 0.4; background: #0f150f; border-left: 3px solid #4caf50; }
             .quest-row.done td { text-decoration: line-through; color: #555; }
             .quest-row.done .req-text { text-decoration: none; }
+            .quest-row.locked { opacity: 0.5; }
+            .quest-row.locked td { color: #666; }
+            .lock-icon { margin-right: 4px; opacity: 0.8; }
 
             .quest-link { color: #e0e0e0; text-decoration: none; border-bottom: 1px dotted #777; transition: 0.2s; }
             .quest-link:hover { color: #9a8c68; border-bottom: 1px solid #9a8c68; }
             .quest-row.in-progress .quest-link { color: #ffcc80; border-color: #ff9800; }
             .quest-row.done .quest-link { color: #555; border-color: #333; }
+            .quest-row.locked .quest-link { color: #666; border-color: #444; }
 
             .action-cell { white-space: nowrap; display: flex; gap: 5px; justify-content: center; }
             .btn-action { width: 30px; height: 30px; border: 1px solid #444; background: #1a1a1a; color: #666; cursor: pointer; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 1.1em; transition: 0.2s; }
@@ -212,6 +217,11 @@
                     <button class="status-btn" onclick="setStatusFilter('done', this)">
                         <span class="dot dot-done"></span>Done <span class="btn-count"><%= stats.countDone %></span>
                     </button>
+                    <% if(stats.countLocked > 0) { %>
+                    <button class="status-btn" onclick="setStatusFilter('locked', this)">
+                        <span class="dot dot-locked"></span>🔒 Zablokowane <span class="btn-count"><%= stats.countLocked %></span>
+                    </button>
+                    <% } %>
                 </div>
             </div>
         </div>
@@ -253,10 +263,10 @@
                     </tr>
                 </thead>
                 <tbody id="questTableBody">
-                    <% quests.forEach(quest => { 
+                    <% quests.forEach(quest => {
                         let statusClass = quest.is_collected === 1 ? 'in-progress' : (quest.is_collected === 2 ? 'done' : 'todo');
                     %>
-                        <tr class="quest-row <%= statusClass %>" data-status="<%= statusClass %>" data-new="<%= quest.is_new %>" 
+                        <tr class="quest-row <%= statusClass %> <%= quest.locked ? 'locked' : '' %>" data-status="<%= statusClass %>" data-locked="<%= quest.locked ? 1 : 0 %>" data-new="<%= quest.is_new %>"
                             data-lvl="<%= quest.min_level %>" data-faction="<%= quest.faction %>">
                             <td class="action-cell">
                                 <form action="/kappa/set_status/<%= quest.id %>" method="POST" onsubmit="saveScroll()">
@@ -284,6 +294,9 @@
                                     <span class="new-badge" style="position:static; display:inline-block; margin-right:5px;" onmouseover="vanish(this, '<%= quest.id %>')" title="Najedź by usunąć">NEW</span> 
                                 <% } %>
                                 
+                                <% if(quest.locked) { %>
+                                    <span class="lock-icon" title="Wymaga wcześniejszego questa/questów - zobacz kolumnę Wymagania">🔒</span>
+                                <% } %>
                                 <% if(quest.wiki_link) { %>
                                     <a href="<%= quest.wiki_link %>" target="_blank" class="quest-link"><%= quest.name %></a>
                                 <% } else { %>
@@ -402,6 +415,7 @@
                 elements.forEach(el => {
                     let status = el.getAttribute('data-status');
                     let isNew = el.getAttribute('data-new') == '1';
+                    let isLocked = el.getAttribute('data-locked') == '1';
                     let text = el.querySelector('.searchable-text') ? el.querySelector('.searchable-text').textContent.toLowerCase() : el.textContent.toLowerCase();
                     let lvl = parseInt(el.getAttribute('data-lvl')) || 0;
                     let faction = el.getAttribute('data-faction') || 'Any';
@@ -409,9 +423,10 @@
                     let statusMatch = false;
                     if(currentStatusFilter === 'all') statusMatch = true;
                     else if(currentStatusFilter === 'new') statusMatch = isNew && (status !== 'done');
+                    else if(currentStatusFilter === 'locked') statusMatch = isLocked;
                     else if(currentStatusFilter === 'todo') {
-                        // MODYFIKACJA: Todo pokazuje teraz 'todo' ORAZ 'in-progress' (WIP)
-                        statusMatch = (status === 'todo' || status === 'in-progress');
+                        // Todo pokazuje 'todo' ORAZ 'in-progress' (WIP), ale bez questów zablokowanych prerekwizytami
+                        statusMatch = (status === 'todo' || status === 'in-progress') && !isLocked;
                     }
                     else if(currentStatusFilter === 'progress' && status === 'in-progress') statusMatch = true;
                     else if(currentStatusFilter === status) statusMatch = true;
