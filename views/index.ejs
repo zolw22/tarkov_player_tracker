@@ -100,12 +100,6 @@
             content: "🔍"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
             font-size: 0.85em; opacity: 0.6; pointer-events: none;
         }
-        .qty-field {
-            width: 64px; text-align: center; background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a;
-            border-radius: var(--radius-sm); padding: 10px 6px; outline: none;
-        }
-        .qty-field:focus { border-color: var(--accent); }
-
         .segmented { display: flex; background: #000; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden; }
         .segmented-opt { padding: 10px 14px; font-size: 0.8em; font-weight: 700; color: #888; cursor: pointer; background: transparent; border: none; transition: all 0.15s; }
         .segmented-opt:hover:not(.active) { background: #161616; color: #bbb; }
@@ -215,6 +209,9 @@
             background: #0a0a0a; color: #fff; font-weight: 700; -moz-appearance: textfield; padding: 0;
         }
         .qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .qty-stepper.qty-stepper-inline { margin: 0; }
+        .qty-stepper.qty-stepper-inline .qty-btn { height: 100%; padding: 10px 0; }
+        .qty-stepper.qty-stepper-inline .qty-input { width: 40px; height: 100%; font-size: 1em; }
 
         .completed-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
         .completed-actions .status-text { color: var(--success); font-weight: 700; font-size: 0.9em; display: flex; align-items: center; gap: 4px; }
@@ -272,7 +269,11 @@
                 <div id="suggestions"></div>
             </div>
             <input type="hidden" id="itemImage" name="image">
-            <input type="number" name="quantity" class="qty-field" value="1" min="1" required>
+            <div class="qty-stepper qty-stepper-inline">
+                <button type="button" class="qty-btn qty-minus" onclick="adjustAddQty(-1)">−</button>
+                <input type="number" name="quantity" id="addQuantity" class="qty-input" value="1" min="1" required>
+                <button type="button" class="qty-btn qty-plus" onclick="adjustAddQty(1)">+</button>
+            </div>
 
             <input type="hidden" name="category" id="addCategoryValue" value="Hideout">
             <div class="segmented" id="addCategorySegment">
@@ -519,6 +520,13 @@
             document.getElementById('addCategoryValue').value = cat;
             btn.parentNode.querySelectorAll('.segmented-opt').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
+        }
+
+        function adjustAddQty(delta) {
+            const input = document.getElementById('addQuantity');
+            let value = (parseInt(input.value) || 1) + delta;
+            if (value < 1) value = 1;
+            input.value = value;
         }
 
         // --- KARTY ITEMÓW: stepper ilości, FIR, kategoria, usuwanie (AJAX) ---
