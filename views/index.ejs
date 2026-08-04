@@ -521,11 +521,11 @@
             btn.classList.add('active');
             let columns = document.querySelectorAll('.column');
             columns.forEach(col => {
-                if (cat === 'all' || col.getAttribute('data-category') === cat) {
-                    col.style.display = 'block';
-                } else {
-                    col.style.display = 'none';
-                }
+                const show = (cat === 'all' || col.getAttribute('data-category') === cat);
+                // UWAGA: nie ustawiać tu style.display='block' - nadpisuje inline'em regułę
+                // .column.items-grid{display:flex} odpowiedzialną za układ kafelków obok siebie.
+                // '' czyści inline override i oddaje decyzję z powrotem arkuszowi CSS.
+                col.style.display = show ? '' : 'none';
             });
         }
 
@@ -649,22 +649,24 @@
         }
 
         // --- RĘCZNA KOLEJNOŚĆ ITEMÓW (przeciągnij za uchwyt ✥, tylko w obrębie tej samej kategorii) ---
-        // Liczy się realna pozycja kursora (X i Y) względem najbliższej karty, nie tylko ta,
-        // nad którą akurat jest mysz - dzięki temu można upuścić gdziekolwiek w kolumnie
-        // (też po skosie w widoku kafelków), a nasłuch wisi na całej kolumnie, nie na kartach.
+        // Algorytm "porządku czytania": idziemy po kartach w kolejności DOM i szukamy pierwszej,
+        // przed którą kursor się znajduje (czy to bo jest wyraźnie nad jej rzędem, czy bo jest
+        // w tym samym rzędzie na jej lewej połówce). Każda karta ma jedną, stałą granicę decyzji,
+        // więc w przeciwieństwie do "najbliższa karta po odległości" nic tu nie oscyluje/miga
+        // na granicy dwóch kart - poprzednia wersja przeliczała layout co klatkę, co zmieniało
+        // wynik "najbliższej" i wywoływało pętlę skoków.
         let draggedCard = null;
         let draggedOriginalColumn = null;
+        let dragRAF = null;
 
-        function getClosestCard(column, x, y) {
+        function findInsertTarget(column, x, y) {
             const cards = [...column.querySelectorAll('.item-card:not(.dragging)')];
-            let best = null, bestDist = Infinity;
-            cards.forEach(card => {
+            for (const card of cards) {
                 const r = card.getBoundingClientRect();
-                const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-                const dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-                if (dist < bestDist) { bestDist = dist; best = { card, cx, cy, height: r.height }; }
-            });
-            return best;
+                if (y < r.top) return card;                                    // wyraźnie nad tym rzędem
+                if (y < r.bottom && x < r.left + r.width / 2) return card;      // ten sam rząd, lewa połówka
+            }
+            return null; // koniec kolumny
         }
 
         function initDragAndDrop() {
@@ -683,6 +685,7 @@
                     card.classList.remove('dragging');
                     draggedCard = null;
                     draggedOriginalColumn = null;
+                    if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
                 });
             });
 
@@ -690,15 +693,16 @@
                 column.addEventListener('dragover', (e) => {
                     if (!draggedCard || column !== draggedOriginalColumn) return; // tylko wewnątrz tej samej kategorii
                     e.preventDefault();
+                    if (dragRAF) return; // max. 1 przeliczenie na klatkę - zero nadmiarowego migotania
 
-                    const target = getClosestCard(column, e.clientX, e.clientY);
-                    if (!target) { column.appendChild(draggedCard); return; }
-                    if (target.card === draggedCard) return;
-
-                    // ta sama "linia" (kafelki obok siebie) -> patrz na X, inna linia -> patrz na Y
-                    const sameRow = Math.abs(e.clientY - target.cy) < target.height / 2;
-                    const insertAfter = sameRow ? (e.clientX > target.cx) : (e.clientY > target.cy);
-                    column.insertBefore(draggedCard, insertAfter ? target.card.nextSibling : target.card);
+                    const clientX = e.clientX, clientY = e.clientY;
+                    dragRAF = requestAnimationFrame(() => {
+                        dragRAF = null;
+                        const target = findInsertTarget(column, clientX, clientY);
+                        if (target === draggedCard) return;
+                        if (target) column.insertBefore(draggedCard, target);
+                        else column.appendChild(draggedCard);
+                    });
                 });
                 column.addEventListener('drop', (e) => {
                     if (!draggedCard || column !== draggedOriginalColumn) return;
