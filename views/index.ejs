@@ -192,13 +192,17 @@
         .fir-chip.active { background: var(--warn); color: #000; border-color: var(--warn); box-shadow: 0 0 8px rgba(255,179,0,0.35); }
 
         .drag-handle {
-            position: absolute; top: 8px; right: 8px; z-index: 10; cursor: grab; user-select: none;
-            color: #555; font-size: 0.9em; letter-spacing: -2px; padding: 2px 4px; border-radius: 4px; transition: color 0.15s, background 0.15s;
+            position: absolute; top: 6px; right: 6px; z-index: 10; cursor: grab; user-select: none;
+            color: #888; font-size: 1.4em; line-height: 1; padding: 4px 7px; border-radius: 6px;
+            background: rgba(0,0,0,0.35); border: 1px solid transparent; transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .drag-handle:hover { color: #ccc; background: #2a2a2a; }
+        .drag-handle:hover { color: #fff; background: #333; border-color: #555; }
         .drag-handle:active { cursor: grabbing; }
-        .item-card.dragging { opacity: 0.35; }
-        .column.items-grid .drag-handle { top: 4px; right: 4px; }
+        .item-card.dragging {
+            opacity: 0.6; transform: scale(1.05); border-color: var(--accent);
+            box-shadow: 0 0 0 2px var(--accent), 0 10px 24px rgba(0,0,0,0.5); z-index: 50;
+        }
+        .column.items-grid .drag-handle { top: 3px; right: 3px; font-size: 1.2em; padding: 3px 5px; }
 
         /* STEPPER ILOŚCI */
         .qty-stepper {
@@ -314,7 +318,7 @@
                          data-cat="<%= cat %>">
 
                         <button type="button" class="fir-chip <%= item.is_fir ? 'active' : '' %>" title="Found in Raid" style="<%= isDone ? 'display:none' : '' %>" onclick="toggleFir(<%= item.id %>, this)">FIR</button>
-                        <span class="drag-handle" draggable="true" title="Przeciągnij, żeby zmienić kolejność">⋮⋮</span>
+                        <span class="drag-handle" draggable="true" title="Przeciągnij, żeby zmienić kolejność">✥</span>
 
                         <div class="card-header">
                             <div class="name-wrapper">
@@ -644,8 +648,24 @@
             });
         }
 
-        // --- RĘCZNA KOLEJNOŚĆ ITEMÓW (przeciągnij za uchwyt ⋮⋮, tylko w obrębie tej samej kategorii) ---
+        // --- RĘCZNA KOLEJNOŚĆ ITEMÓW (przeciągnij za uchwyt ✥, tylko w obrębie tej samej kategorii) ---
+        // Liczy się realna pozycja kursora (X i Y) względem najbliższej karty, nie tylko ta,
+        // nad którą akurat jest mysz - dzięki temu można upuścić gdziekolwiek w kolumnie
+        // (też po skosie w widoku kafelków), a nasłuch wisi na całej kolumnie, nie na kartach.
         let draggedCard = null;
+        let draggedOriginalColumn = null;
+
+        function getClosestCard(column, x, y) {
+            const cards = [...column.querySelectorAll('.item-card:not(.dragging)')];
+            let best = null, bestDist = Infinity;
+            cards.forEach(card => {
+                const r = card.getBoundingClientRect();
+                const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                const dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                if (dist < bestDist) { bestDist = dist; best = { card, cx, cy, height: r.height }; }
+            });
+            return best;
+        }
 
         function initDragAndDrop() {
             document.querySelectorAll('.item-card').forEach(card => {
@@ -654,6 +674,7 @@
 
                 handle.addEventListener('dragstart', (e) => {
                     draggedCard = card;
+                    draggedOriginalColumn = card.closest('.column');
                     card.classList.add('dragging');
                     e.dataTransfer.effectAllowed = 'move';
                     e.dataTransfer.setData('text/plain', card.dataset.id);
@@ -661,21 +682,28 @@
                 handle.addEventListener('dragend', () => {
                     card.classList.remove('dragging');
                     draggedCard = null;
+                    draggedOriginalColumn = null;
                 });
+            });
 
-                card.addEventListener('dragover', (e) => {
-                    if (!draggedCard || draggedCard === card) return;
-                    const column = card.closest('.column');
-                    if (!column || !column.contains(draggedCard)) return; // tylko wewnątrz tej samej kategorii
+            document.querySelectorAll('.column').forEach(column => {
+                column.addEventListener('dragover', (e) => {
+                    if (!draggedCard || column !== draggedOriginalColumn) return; // tylko wewnątrz tej samej kategorii
                     e.preventDefault();
-                    const rect = card.getBoundingClientRect();
-                    const before = (e.clientY - rect.top) < rect.height / 2;
-                    column.insertBefore(draggedCard, before ? card : card.nextSibling);
+
+                    const target = getClosestCard(column, e.clientX, e.clientY);
+                    if (!target) { column.appendChild(draggedCard); return; }
+                    if (target.card === draggedCard) return;
+
+                    // ta sama "linia" (kafelki obok siebie) -> patrz na X, inna linia -> patrz na Y
+                    const sameRow = Math.abs(e.clientY - target.cy) < target.height / 2;
+                    const insertAfter = sameRow ? (e.clientX > target.cx) : (e.clientY > target.cy);
+                    column.insertBefore(draggedCard, insertAfter ? target.card.nextSibling : target.card);
                 });
-                card.addEventListener('drop', (e) => {
-                    if (!draggedCard) return;
+                column.addEventListener('drop', (e) => {
+                    if (!draggedCard || column !== draggedOriginalColumn) return;
                     e.preventDefault();
-                    persistOrder(card.closest('.column'));
+                    persistOrder(column);
                 });
             });
         }
