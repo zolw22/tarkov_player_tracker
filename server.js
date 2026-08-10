@@ -8,12 +8,28 @@ const fs = require('fs');
 
 const app = express();
 const PORT = 9999;
-const VERSION = "3.4";
+const VERSION = "3.5";
 const AUTHOR = "ZOLW22";
 
 // tarkov.dev wymaga teraz unikalnego, identyfikującego projekt User-Agenta przy każdym
 // requeście (GraphQL i JSON API) - inaczej ryzyko zablokowania jako podejrzany ruch.
 const PROJECT_UA = `TarkovPlayerTracker/${VERSION} (+https://github.com/zolw22/tarkov_player_tracker)`;
+
+// --- MAPY (gdzie przedmiot się znajduje - loose loot) ---
+// json.tarkov.dev zwraca warianty/duplikaty map (dzień/noc, poziomy GZ, tutorial) - scalamy
+// je do jednej "prawdziwej" mapy. Mapy pominięte tu (tutorial/dark/event) nie liczą się
+// w ogóle do wykrywania "dostępne wszędzie".
+const MAP_CANONICALIZE = {
+    'factory': 'Factory', 'night-factory': 'Factory',
+    'customs': 'Customs', 'woods': 'Woods', 'lighthouse': 'Lighthouse', 'shoreline': 'Shoreline',
+    'reserve': 'Reserve', 'interchange': 'Interchange', 'streets-of-tarkov': 'Streets of Tarkov',
+    'the-lab': 'The Lab', 'the-lab-dark': 'The Lab',
+    'ground-zero': 'Ground Zero', 'ground-zero-21': 'Ground Zero',
+    'the-labyrinth': 'The Labyrinth'
+};
+// pełny zestaw "normalnych" map do porównania - jeśli item pokrywa je wszystkie, pokazujemy
+// "dostępne wszędzie" zamiast wypisywać każdą z osobna
+const STANDARD_MAPS = ['Customs', 'Factory', 'Woods', 'Lighthouse', 'Shoreline', 'Reserve', 'Interchange', 'Streets of Tarkov', 'Ground Zero', 'The Lab'];
 
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
@@ -72,10 +88,21 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_avg INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_max INTEGER DEFAULT 0",
                     "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'",
-                    "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0"
+                    "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
+                    "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''"
                 ];
                 let done = 0;
-                migrations.forEach(sql => db.run(sql, () => { done++; if (done === migrations.length) startBackgroundTasks(); }));
+                migrations.forEach(sql => db.run(sql, () => {
+                    done++;
+                    if (done === migrations.length) {
+                        // uzupełnij item_id dla itemów dodanych przed tą funkcją (dopasowanie po nazwie,
+                        // tylko tam gdzie jeszcze nie ustawione - nic nie nadpisuje)
+                        db.run(`UPDATE items SET item_id = (SELECT id FROM tarkov_items_cache WHERE tarkov_items_cache.name = items.name LIMIT 1)
+                                WHERE (item_id IS NULL OR item_id = '') AND EXISTS (SELECT 1 FROM tarkov_items_cache WHERE tarkov_items_cache.name = items.name)`,
+                            () => startBackgroundTasks());
+                    }
+                }));
                 
                 db.get("SELECT count(*) as count FROM kappa_tracker WHERE is_collected = 2", [], (err, row) => {
                     if (row && row.count === 0) db.run("UPDATE kappa_tracker SET is_collected = 2 WHERE is_collected = 1");
@@ -101,6 +128,10 @@ function startBackgroundTasks() {
 
     // Normalnie questy/Kappa odświeżają się co SYNC_INTERVAL (dane rzadko się zmieniają)
     setInterval(runKappaSync, SYNC_INTERVAL);
+
+    // Mapy loose lootu - jeszcze rzadziej się zmieniają, więc też co SYNC_INTERVAL
+    setTimeout(runMapSync, 6000);
+    setInterval(runMapSync, SYNC_INTERVAL);
 }
 
 // Jeśli cache questów jest wciąż pusty po próbie synchronizacji (np. bo API padało
@@ -115,6 +146,16 @@ async function runKappaSync() {
             setTimeout(runKappaSync, PRICES_INTERVAL);
         }
     });
+}
+
+// Tak samo jak runKappaSync - jeśli się nie udało (np. API padało), próbuje częściej,
+// dopóki się nie uda choć raz.
+async function runMapSync() {
+    const ok = await syncMapLootLocations();
+    if (!ok) {
+        console.log("⏳ [MAPY] Nie udało się pobrać danych o mapach, spróbuję ponownie za " + (PRICES_INTERVAL / 60000) + " min.");
+        setTimeout(runMapSync, PRICES_INTERVAL);
+    }
 }
 
 // api.tarkov.dev czasem zgłasza przejściową awarię jako 503, czasem jako 422 z body
@@ -235,6 +276,50 @@ async function fetchTasksFromJsonApi() {
     });
 }
 
+// --- MAPY (gdzie przedmiot się faktycznie znajduje - loose loot) ---
+// Dostępne tylko dla ~kilkuset rzadkich/wartościowych przedmiotów (zegarki, monety,
+// plakaty, przedmioty questowe itd.) - zwykłe materiały craftingowe tego nie mają w ogóle
+// (spawnują w kontenerach, nie jako oznaczone punkty), więc dla nich po prostu nic nie
+// pokażemy. Świeżo dodane do gry przedmioty też mogą jeszcze nie mieć danych - to nie błąd,
+// tarkov.dev jeszcze ich nie skatalogował.
+async function syncMapLootLocations() {
+    console.log("🗺️ [MAPY] Sprawdzam lokalizacje przedmiotów (loose loot)...");
+    try {
+        const data = await fetchJsonApi('/regular/maps');
+        const maps = Object.values(data.maps || {});
+        if (maps.length === 0) throw new Error('json.tarkov.dev: pusta lista map');
+
+        const index = {}; // itemId -> Set(nazwa kanoniczna mapy)
+        maps.forEach(m => {
+            const canonical = MAP_CANONICALIZE[m.normalizedName];
+            if (!canonical) return; // pomijamy tutorial/event/duplikaty
+            (m.lootLoose || []).forEach(spot => {
+                (spot.items || []).forEach(itemId => {
+                    if (!index[itemId]) index[itemId] = new Set();
+                    index[itemId].add(canonical);
+                });
+            });
+        });
+
+        const ids = Object.keys(index);
+        await new Promise((resolve) => {
+            db.serialize(() => {
+                db.run("BEGIN TRANSACTION");
+                const stmt = db.prepare("UPDATE tarkov_items_cache SET maps = ? WHERE id = ?");
+                ids.forEach(id => stmt.run(JSON.stringify([...index[id]].sort()), id));
+                stmt.finalize();
+                db.run("COMMIT", resolve);
+            });
+        });
+
+        console.log(`✅ [MAPY] Zaktualizowano lokalizacje dla ${ids.length} przedmiotów.`);
+        return true;
+    } catch (e) {
+        console.error("❌ [ERROR] Błąd pobierania map:", e.message);
+        return false;
+    }
+}
+
 // --- CACHE & CENY ---
 async function updateItemCache() {
     console.log("💰 [MARKET] Sprawdzanie aktualnych cen (Flea Market)...");
@@ -259,7 +344,13 @@ async function updateItemCache() {
 
     db.serialize(() => {
         db.run("BEGIN TRANSACTION");
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+        // UWAGA: celowo NIE "INSERT OR REPLACE" - to kasuje/wstawia wiersz na nowo w SQLite,
+        // co resetowałoby kolumnę "maps" (ustawianą osobno przez syncMapLootLocations) do
+        // wartości domyślnej przy każdym odświeżeniu cen co 10 min. ON CONFLICT DO UPDATE
+        // dotyka tylko wymienionych kolumn.
+        const stmt = db.prepare(`INSERT INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET name=excluded.name, shortName=excluded.shortName, image=excluded.image,
+                price_min=excluded.price_min, price_avg=excluded.price_avg, price_max=excluded.price_max`);
 
         items.forEach(i => {
             const min = i.lastLowPrice || 0;
@@ -347,7 +438,16 @@ async function syncKappaWithAPI() {
 
 // --- ROUTY ---
 app.get('/', (req, res) => {
-    db.all("SELECT * FROM items ORDER BY (quantity = 0), sort_order ASC, id DESC", [], (err, rows) => {
+    db.all(`SELECT items.*, tarkov_items_cache.maps as cache_maps FROM items
+            LEFT JOIN tarkov_items_cache ON items.item_id = tarkov_items_cache.id
+            ORDER BY (quantity = 0), sort_order ASC, id DESC`, [], (err, rows) => {
+        rows.forEach(r => {
+            let maps = [];
+            try { maps = JSON.parse(r.cache_maps || '[]'); } catch (e) { maps = []; }
+            if (maps.length === 0) r.mapsInfo = null; // brak danych - nie wiemy / nie dotyczy
+            else if (STANDARD_MAPS.every(m => maps.includes(m))) r.mapsInfo = 'ALL';
+            else r.mapsInfo = maps;
+        });
         const categories = { 'Hideout': rows.filter(r => r.category === 'Hideout'), 'Crafting': rows.filter(r => r.category === 'Crafting'), 'Misje': rows.filter(r => r.category === 'Misje') };
         res.render('index', { categories });
     });
@@ -395,9 +495,9 @@ app.post('/kappa/toggle/:id', (req, res) => { db.get("SELECT is_collected FROM k
 app.post('/kappa/add', (req, res) => { const { name, image } = req.body; db.get("SELECT id FROM kappa_tracker WHERE name = ?", [name], (err, row) => { if (!row) db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements) VALUES (?, ?, 0, 1, 'item', 0, 'Custom', 'Ręcznie')`, [name, image || ''], () => res.redirect('/kappa')); else res.redirect('/kappa'); }); });
 app.post('/kappa/add_quest', (req, res) => { const { name, trader } = req.body; db.get("SELECT id FROM kappa_tracker WHERE name = ?", [name], (err, row) => { if (!row) db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, map, trader_image) VALUES (?, '', 0, 1, 'quest', 0, ?, 'Ręcznie dodane', 'Any', '')`, [name, trader || 'Custom'], () => res.redirect('/kappa')); else res.redirect('/kappa'); }); });
 app.post('/kappa/refresh', async (req, res) => { await syncKappaWithAPI(); res.redirect('/kappa'); });
-app.get('/api/search', (req, res) => { const q = req.query.q; if (!q || q.length < 2) return res.json([]); db.all(`SELECT name, image FROM tarkov_items_cache WHERE name LIKE ? OR shortName LIKE ? LIMIT 10`, [`%${q}%`, `%${q}%`], (err, rows) => res.json(rows || [])); });
+app.get('/api/search', (req, res) => { const q = req.query.q; if (!q || q.length < 2) return res.json([]); db.all(`SELECT id, name, image FROM tarkov_items_cache WHERE name LIKE ? OR shortName LIKE ? LIMIT 10`, [`%${q}%`, `%${q}%`], (err, rows) => res.json(rows || [])); });
 app.get('/api/search_tasks', (req, res) => { const q = req.query.q; if (!q || q.length < 2) return res.json([]); db.all(`SELECT name, trader FROM tarkov_tasks_cache WHERE name LIKE ? LIMIT 10`, [`%${q}%`], (err, rows) => res.json(rows || [])); });
-app.post('/add', (req, res) => { const { name, quantity, category, image, fir } = req.body; const isFir = fir === 'on' ? 1 : 0; db.run(`INSERT INTO items (name, quantity, category, image, is_fir) VALUES (?, ?, ?, ?, ?)`, [name, quantity, category, image || '', isFir], () => res.redirect('/')); });
+app.post('/add', (req, res) => { const { name, quantity, category, image, fir, item_id } = req.body; const isFir = fir === 'on' ? 1 : 0; db.run(`INSERT INTO items (name, quantity, category, image, is_fir, item_id) VALUES (?, ?, ?, ?, ?, ?)`, [name, quantity, category, image || '', isFir, item_id || ''], () => res.redirect('/')); });
 
 // --- ITEMY (kontrolki karty - AJAX, bez przeładowania strony) ---
 app.post('/api/items/:id/fir', (req, res) => {
