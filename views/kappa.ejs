@@ -145,9 +145,10 @@
     <body>
 
         <div class="nav-bar">
-            <a href="/" class="nav-link">Loot & Hideout</a>
+            <a href="/" class="nav-link">Loot</a>
+            <a href="/hideout" class="nav-link">Hideout</a>
             <a href="/kappa" class="nav-link active">Kappa Collector</a>
-            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy) oraz wyczyści listę lootu na stronie głównej.\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
+            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy) oraz wyczyści listę lootu na stronie głównej i postęp Hideoutu.\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
                 <button type="submit" class="wipe-btn" title="Reset postępu jak przy wipe'ie serwera">💀 Wipe</button>
             </form>
         </div>

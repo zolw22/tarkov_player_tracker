@@ -64,7 +64,18 @@ function initializeDatabase() {
             price_min INTEGER DEFAULT 0, price_avg INTEGER DEFAULT 0, price_max INTEGER DEFAULT 0
         )`);
         db.run(`CREATE TABLE IF NOT EXISTS tarkov_tasks_cache (id TEXT PRIMARY KEY, name TEXT, trader TEXT)`);
-        
+
+        // --- HIDEOUT (stacje, poziomy, wymagane itemy - cache z tarkov.dev) ---
+        db.run(`CREATE TABLE IF NOT EXISTS hideout_stations (id TEXT PRIMARY KEY, name TEXT, normalized_name TEXT, image TEXT)`);
+        db.run(`CREATE TABLE IF NOT EXISTS hideout_levels (
+            id TEXT PRIMARY KEY, station_id TEXT, level INTEGER, construction_time INTEGER DEFAULT 0,
+            station_reqs TEXT DEFAULT '[]', trader_reqs TEXT DEFAULT '[]', skill_reqs TEXT DEFAULT '[]'
+        )`);
+        db.run(`CREATE TABLE IF NOT EXISTS hideout_level_items (level_id TEXT, item_id TEXT, count INTEGER, fir INTEGER DEFAULT 0, PRIMARY KEY (level_id, item_id))`);
+        // postęp użytkownika: przypięte/zbudowane poziomy + ile sztuk danego itemu już ma
+        db.run(`CREATE TABLE IF NOT EXISTS hideout_progress (level_id TEXT PRIMARY KEY, pinned INTEGER DEFAULT 0, built INTEGER DEFAULT 0)`);
+        db.run(`CREATE TABLE IF NOT EXISTS hideout_have (item_id TEXT PRIMARY KEY, have INTEGER DEFAULT 0)`);
+
         db.run(`CREATE TABLE IF NOT EXISTS kappa_tracker (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT, is_collected INTEGER DEFAULT 0, image TEXT, is_new INTEGER DEFAULT 0,
@@ -132,6 +143,19 @@ function startBackgroundTasks() {
     // Mapy loose lootu - jeszcze rzadziej się zmieniają, więc też co SYNC_INTERVAL
     setTimeout(runMapSync, 6000);
     setInterval(runMapSync, SYNC_INTERVAL);
+
+    // Hideout (stacje/poziomy/itemy) - zmienia się tylko z patchami, więc co SYNC_INTERVAL
+    setTimeout(runHideoutSync, 9000);
+    setInterval(runHideoutSync, SYNC_INTERVAL);
+}
+
+// Jak runMapSync - jeśli API padało, dobijamy się częściej aż do pierwszego sukcesu.
+async function runHideoutSync() {
+    const ok = await syncHideout();
+    if (!ok) {
+        console.log("⏳ [HIDEOUT] Nie udało się pobrać danych hideoutu, spróbuję ponownie za " + (PRICES_INTERVAL / 60000) + " min.");
+        setTimeout(runHideoutSync, PRICES_INTERVAL);
+    }
 }
 
 // Jeśli cache questów jest wciąż pusty po próbie synchronizacji (np. bo API padało
@@ -318,6 +342,113 @@ async function syncMapLootLocations() {
         console.error("❌ [ERROR] Błąd pobierania map:", e.message);
         return false;
     }
+}
+
+// --- HIDEOUT (stacje, poziomy, wymagane itemy) ---
+// Źródło: GraphQL hideoutStations, a gdy pada - json.tarkov.dev/regular/hideout. Oba sprowadzamy
+// do jednej postaci: { id, name, normalizedName, imageLink, levels: [{ id, level, constructionTime,
+// stationReqs: [{stationId, level}], traderReqs: [{name, level}], skillReqs: [{name, level}],
+// items: [{itemId, count, fir}] }] }. Nazwy itemów/ikony dociągamy z tarkov_items_cache przy renderze.
+// json.tarkov.dev podaje nazwy stacji jako klucze lokalizacji ("hideout_area_13_name") - wtedy
+// nazwę budujemy ze sluga (normalizedName), np. "water-collector" -> "Water Collector".
+function resolveStationName(rawName, normalizedName) {
+    if (!rawName || /^hideout_area_/i.test(rawName)) return humanizeSlug(normalizedName) || rawName || '?';
+    return rawName;
+}
+
+async function fetchHideoutFromGraphql() {
+    const query = `
+    {
+        hideoutStations(lang: en) {
+            id name normalizedName imageLink
+            levels {
+                id level constructionTime
+                itemRequirements { count item { id } attributes { name value } }
+                stationLevelRequirements { level station { id } }
+                traderRequirements { value trader { name } }
+                skillRequirements { name level }
+            }
+        }
+    }`;
+    const response = await tarkovApiRequest({ query });
+    const stations = response.data.data ? response.data.data.hideoutStations : null;
+    if (!stations || stations.length === 0) throw new Error('GraphQL: pusta lista stacji hideoutu');
+    return stations.map(s => ({
+        id: s.id, name: resolveStationName(s.name, s.normalizedName), normalizedName: s.normalizedName || '', imageLink: s.imageLink || '',
+        levels: (s.levels || []).map(l => ({
+            id: l.id || `${s.id}-${l.level}`, level: l.level, constructionTime: l.constructionTime || 0,
+            stationReqs: (l.stationLevelRequirements || []).filter(r => r.station).map(r => ({ stationId: r.station.id, level: r.level })),
+            traderReqs: (l.traderRequirements || []).filter(r => r.trader).map(r => ({ name: r.trader.name, level: r.value })),
+            skillReqs: (l.skillRequirements || []).map(r => ({ name: r.name, level: r.level })),
+            items: (l.itemRequirements || []).filter(r => r.item).map(r => ({
+                itemId: r.item.id, count: r.count || 1,
+                fir: (r.attributes || []).some(a => a.name === 'foundInRaid' && String(a.value) === 'true') ? 1 : 0
+            }))
+        }))
+    }));
+}
+
+async function fetchHideoutFromJsonApi() {
+    const [data, tradersData] = await Promise.all([fetchJsonApi('/regular/hideout'), fetchJsonApi('/regular/traders').catch(() => ({}))]);
+    const rawList = Object.values(data || {});
+    if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista stacji hideoutu');
+    const traderNameById = {};
+    Object.values(tradersData || {}).forEach(t => { if (t && t.id) traderNameById[t.id] = resolveName(t.name, t.id, t.normalizedName); });
+
+    return rawList.map(s => ({
+        id: s.id, name: resolveStationName(s.name, s.normalizedName), normalizedName: s.normalizedName || '', imageLink: s.imageLink || '',
+        levels: (s.levels || []).map(l => ({
+            id: l.id || `${s.id}-${l.level}`, level: l.level, constructionTime: l.constructionTime || 0,
+            stationReqs: (l.stationLevelRequirements || []).map(r => ({ stationId: r.station, level: r.level })),
+            traderReqs: (l.traderRequirements || []).map(r => ({ name: traderNameById[r.trader] || humanizeSlug(r.trader) || '?', level: r.value || r.level })),
+            skillReqs: (l.skillRequirements || []).map(r => ({ name: r.skill || r.name, level: r.level })),
+            items: (l.itemRequirements || []).filter(r => r.item).map(r => ({
+                itemId: r.item, count: r.count || 1, fir: (r.attributes && r.attributes.foundInRaid) ? 1 : 0
+            }))
+        }))
+    }));
+}
+
+async function syncHideout() {
+    console.log("🏠 [HIDEOUT] Synchronizuję stacje hideoutu...");
+    let stations;
+    try {
+        stations = await fetchHideoutFromGraphql();
+    } catch (graphqlErr) {
+        console.warn("⚠️ [HIDEOUT] GraphQL zawiódł, próbuję json.tarkov.dev...");
+        try {
+            stations = await fetchHideoutFromJsonApi();
+        } catch (jsonErr) {
+            console.error("❌ [HIDEOUT] Błąd pobierania (GraphQL i JSON):", jsonErr.message);
+            return false;
+        }
+    }
+
+    await new Promise((resolve) => {
+        db.serialize(() => {
+            db.run("BEGIN TRANSACTION");
+            // pełne odświeżenie cache'u (postęp użytkownika jest w osobnych tabelach i zostaje)
+            db.run("DELETE FROM hideout_level_items");
+            db.run("DELETE FROM hideout_levels");
+            db.run("DELETE FROM hideout_stations");
+            const stStmt = db.prepare("INSERT INTO hideout_stations (id, name, normalized_name, image) VALUES (?, ?, ?, ?)");
+            const lvStmt = db.prepare("INSERT INTO hideout_levels (id, station_id, level, construction_time, station_reqs, trader_reqs, skill_reqs) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            const itStmt = db.prepare("INSERT OR REPLACE INTO hideout_level_items (level_id, item_id, count, fir) VALUES (?, ?, ?, ?)");
+            stations.forEach(s => {
+                stStmt.run(s.id, s.name, s.normalizedName, s.imageLink);
+                s.levels.forEach(l => {
+                    lvStmt.run(l.id, s.id, l.level, l.constructionTime, JSON.stringify(l.stationReqs), JSON.stringify(l.traderReqs), JSON.stringify(l.skillReqs));
+                    l.items.forEach(i => itStmt.run(l.id, i.itemId, i.count, i.fir));
+                });
+            });
+            stStmt.finalize(); lvStmt.finalize(); itStmt.finalize();
+            db.run("COMMIT", resolve);
+        });
+    });
+
+    const levelCount = stations.reduce((n, s) => n + s.levels.length, 0);
+    console.log(`✅ [HIDEOUT] Zapisano ${stations.length} stacji, ${levelCount} poziomów.`);
+    return true;
 }
 
 // --- CACHE & CENY ---
@@ -538,6 +669,131 @@ app.post('/api/items/reorder', (req, res) => {
     });
 });
 
+// --- HIDEOUT (strona + API) ---
+const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || [])));
+const dbGet = (sql, params = []) => new Promise((resolve, reject) => db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+const dbRun = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, (err) => err ? reject(err) : resolve()));
+const parseJson = (s, fallback) => { try { return JSON.parse(s || ''); } catch (e) { return fallback; } };
+
+// Składa pełny obraz hideoutu: stacje -> poziomy -> itemy (z nazwą/ikoną/mapami z cache'u),
+// plus stan użytkownika (przypięte/zbudowane poziomy, ile sztuk każdego itemu ma).
+async function loadHideoutData() {
+    const [stations, levels, levelItems, progress, haveRows] = await Promise.all([
+        dbAll("SELECT * FROM hideout_stations ORDER BY name ASC"),
+        dbAll("SELECT * FROM hideout_levels ORDER BY station_id, level ASC"),
+        dbAll(`SELECT li.level_id, li.item_id, li.count, li.fir, c.name, c.shortName, c.image, c.maps, c.price_avg
+               FROM hideout_level_items li LEFT JOIN tarkov_items_cache c ON c.id = li.item_id`),
+        dbAll("SELECT * FROM hideout_progress"),
+        dbAll("SELECT * FROM hideout_have")
+    ]);
+    const stationNameById = {}; stations.forEach(s => { stationNameById[s.id] = s.name; });
+    const progressById = {}; progress.forEach(p => { progressById[p.level_id] = p; });
+    const have = {}; haveRows.forEach(h => { have[h.item_id] = h.have; });
+    const builtLevelByStation = {}; // stationId -> najwyższy zbudowany poziom
+    levels.forEach(l => { const p = progressById[l.id]; if (p && p.built) builtLevelByStation[l.station_id] = Math.max(builtLevelByStation[l.station_id] || 0, l.level); });
+
+    const itemsByLevel = {};
+    levelItems.forEach(li => {
+        if (!itemsByLevel[li.level_id]) itemsByLevel[li.level_id] = [];
+        let maps = parseJson(li.maps, []);
+        let mapsInfo = null;
+        if (maps.length > 0) mapsInfo = STANDARD_MAPS.every(m => maps.includes(m)) ? 'ALL' : maps;
+        itemsByLevel[li.level_id].push({
+            itemId: li.item_id, count: li.count, fir: li.fir,
+            name: li.name || `Nieznany przedmiot (${li.item_id})`, shortName: li.shortName || '', image: li.image || '',
+            mapsInfo, priceAvg: li.price_avg || 0
+        });
+    });
+
+    const levelsByStation = {};
+    levels.forEach(l => {
+        const p = progressById[l.id] || { pinned: 0, built: 0 };
+        const stationReqs = parseJson(l.station_reqs, []).map(r => ({ ...r, stationName: stationNameById[r.stationId] || '?', met: (builtLevelByStation[r.stationId] || 0) >= r.level }));
+        const lvl = {
+            id: l.id, level: l.level, constructionTime: l.construction_time,
+            stationReqs, traderReqs: parseJson(l.trader_reqs, []), skillReqs: parseJson(l.skill_reqs, []),
+            items: (itemsByLevel[l.id] || []).sort((a, b) => b.count - a.count),
+            pinned: !!p.pinned, built: !!p.built,
+            locked: stationReqs.some(r => !r.met)
+        };
+        if (!levelsByStation[l.station_id]) levelsByStation[l.station_id] = [];
+        levelsByStation[l.station_id].push(lvl);
+    });
+
+    return {
+        stations: stations.map(s => ({ id: s.id, name: s.name, image: s.image, levels: levelsByStation[s.id] || [] })),
+        have
+    };
+}
+
+app.get('/hideout', async (req, res) => {
+    try {
+        const data = await loadHideoutData();
+        res.render('hideout', { data });
+    } catch (e) {
+        console.error("❌ [HIDEOUT] Błąd renderowania:", e.message);
+        res.status(500).send('Błąd ładowania hideoutu: ' + e.message);
+    }
+});
+
+app.post('/hideout/refresh', async (req, res) => { await syncHideout(); res.redirect('/hideout'); });
+
+app.post('/api/hideout/levels/:id/pin', async (req, res) => {
+    try {
+        const row = await dbGet("SELECT pinned FROM hideout_progress WHERE level_id = ?", [req.params.id]);
+        const next = row && row.pinned ? 0 : 1;
+        await dbRun("INSERT INTO hideout_progress (level_id, pinned, built) VALUES (?, ?, 0) ON CONFLICT(level_id) DO UPDATE SET pinned = excluded.pinned", [req.params.id, next]);
+        res.json({ id: req.params.id, pinned: !!next });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Oznaczenie poziomu N jako zbudowany: wszystkie poziomy <= N tej stacji stają się zbudowane
+// (i tracą przypięcie), a itemy świeżo "zbudowanych" poziomów odejmujemy z licznika "mam"
+// (bo właśnie poszły na budowę). Odznaczenie: poziomy >= N wracają do "niezbudowane".
+app.post('/api/hideout/levels/:id/built', async (req, res) => {
+    try {
+        const target = await dbGet("SELECT id, station_id, level FROM hideout_levels WHERE id = ?", [req.params.id]);
+        if (!target) return res.status(404).json({ error: 'not found' });
+        const current = await dbGet("SELECT built FROM hideout_progress WHERE level_id = ?", [target.id]);
+        const makeBuilt = !(current && current.built);
+
+        const stationLevels = await dbAll("SELECT l.id, l.level, COALESCE(p.built, 0) AS built FROM hideout_levels l LEFT JOIN hideout_progress p ON p.level_id = l.id WHERE l.station_id = ?", [target.station_id]);
+        const affected = stationLevels.filter(l => makeBuilt ? l.level <= target.level : l.level >= target.level);
+        const changedIds = [];
+        for (const l of affected) {
+            if (makeBuilt && !l.built) changedIds.push(l.id);
+            await dbRun("INSERT INTO hideout_progress (level_id, pinned, built) VALUES (?, 0, ?) ON CONFLICT(level_id) DO UPDATE SET built = excluded.built, pinned = CASE WHEN excluded.built = 1 THEN 0 ELSE pinned END", [l.id, makeBuilt ? 1 : 0]);
+        }
+
+        const haveChanges = {};
+        if (changedIds.length > 0) {
+            const placeholders = changedIds.map(() => '?').join(',');
+            const consumed = await dbAll(`SELECT item_id, SUM(count) AS total FROM hideout_level_items WHERE level_id IN (${placeholders}) GROUP BY item_id`, changedIds);
+            for (const c of consumed) {
+                const h = await dbGet("SELECT have FROM hideout_have WHERE item_id = ?", [c.item_id]);
+                if (!h || h.have <= 0) continue;
+                const next = Math.max(0, h.have - c.total);
+                await dbRun("UPDATE hideout_have SET have = ? WHERE item_id = ?", [next, c.item_id]);
+                haveChanges[c.item_id] = next;
+            }
+        }
+
+        const levelsOut = await dbAll("SELECT l.id, COALESCE(p.pinned, 0) AS pinned, COALESCE(p.built, 0) AS built FROM hideout_levels l LEFT JOIN hideout_progress p ON p.level_id = l.id WHERE l.station_id = ?", [target.station_id]);
+        res.json({ levels: levelsOut.map(l => ({ id: l.id, pinned: !!l.pinned, built: !!l.built })), have: haveChanges });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/hideout/have/:itemId', async (req, res) => {
+    try {
+        const row = await dbGet("SELECT have FROM hideout_have WHERE item_id = ?", [req.params.itemId]);
+        const currentHave = row ? row.have : 0;
+        let next = req.body.value !== undefined ? parseInt(req.body.value) : currentHave + parseInt(req.body.delta);
+        if (isNaN(next) || next < 0) next = 0;
+        await dbRun("INSERT INTO hideout_have (item_id, have) VALUES (?, ?) ON CONFLICT(item_id) DO UPDATE SET have = excluded.have", [req.params.itemId, next]);
+        res.json({ itemId: req.params.itemId, have: next });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- WIPE (reset postępu, jak przy wipe'ie serwera w grze) ---
 app.post('/wipe', (req, res) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -553,8 +809,10 @@ app.post('/wipe', (req, res) => {
             db.run("BEGIN TRANSACTION");
             db.run("UPDATE kappa_tracker SET is_collected = 0, is_new = 0");
             db.run("DELETE FROM items");
+            db.run("DELETE FROM hideout_progress");
+            db.run("DELETE FROM hideout_have");
             db.run("COMMIT", () => {
-                console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu).");
+                console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu + hideout).");
                 res.redirect('/kappa');
             });
         });

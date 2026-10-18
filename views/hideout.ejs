@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarkov Tracker - Hideout</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: #1a1a1a;
+            --panel-2: #1e1e1e;
+            --border: #2c2c2c;
+            --border-soft: #383838;
+            --text-dim: #888;
+            --accent: #9a8c68;
+            --accent-soft: rgba(154,140,104,0.16);
+            --success: #4caf50;
+            --success-soft: rgba(76,175,80,0.14);
+            --danger: #e05252;
+            --danger-soft: rgba(224,82,82,0.14);
+            --warn: #ffb300;
+            --warn-soft: rgba(255,179,0,0.12);
+            --pin: #5aa9e6;
+            --pin-soft: rgba(90,169,230,0.14);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --shadow: 0 6px 18px rgba(0,0,0,0.35);
+        }
+
+        * { box-sizing: border-box; }
+        body { background-color: var(--bg); color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 10px; margin: 0; padding-bottom: 50px; }
+        input, button { font-family: inherit; font-size: 1em; }
+
+        /* GÓRNY PASEK */
+        .top-status-bar {
+            background: var(--panel); border-bottom: 1px solid var(--border); padding: 10px 20px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;
+            position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 14px rgba(0,0,0,0.45); margin-bottom: 20px;
+            border-radius: 0 0 var(--radius) var(--radius);
+        }
+        .nav-bar { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+        .nav-link {
+            text-decoration: none; color: #888; padding: 8px 18px;
+            border: 1px solid var(--border-soft); border-radius: 999px; background: #161616;
+            font-weight: bold; text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .nav-link:hover { border-color: #555; color: #ccc; }
+        .nav-link.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+        .wipe-btn {
+            background: var(--danger-soft); color: #ff8a80; border: 1px solid rgba(224,82,82,0.35);
+            padding: 8px 16px; border-radius: 999px; font-weight: bold; text-transform: uppercase;
+            cursor: pointer; font-size: 0.75em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .wipe-btn:hover { background: var(--danger); color: #fff; }
+        .refresh-btn {
+            background: #161616; color: #888; border: 1px solid var(--border-soft); padding: 8px 16px; border-radius: 999px;
+            font-weight: bold; text-transform: uppercase; cursor: pointer; font-size: 0.75em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .refresh-btn:hover { border-color: #555; color: #ccc; }
+
+        .summary { display: flex; gap: 18px; align-items: center; }
+        .summary-stat { display: flex; flex-direction: column; align-items: flex-end; }
+        .summary-stat span { font-size: 0.65em; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+        .summary-stat b { font-family: 'Consolas', monospace; font-size: 1.25em; color: #fff; }
+        .summary-stat b.accent { color: var(--accent); }
+
+        .api-status-banner {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000;
+            background: #2a1414; color: #ff8a80; border-top: 1px solid rgba(224,82,82,0.4);
+            padding: 8px 15px; text-align: center; font-size: 0.85em; font-weight: bold;
+            display: none; box-shadow: 0 -2px 10px rgba(0,0,0,0.5);
+        }
+        .api-status-banner.show { display: block; }
+
+        .page { max-width: 1400px; margin: 0 auto; }
+        .empty-state { text-align: center; color: #555; font-size: 0.85em; padding: 24px 10px; font-style: italic; }
+
+        /* --- PANEL PRZYPIĘTYCH --- */
+        .pinned-panel {
+            background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+            box-shadow: var(--shadow); padding: 14px; margin-bottom: 22px;
+        }
+        .pinned-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px; }
+        .pinned-title { color: #888; font-size: 1em; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
+        .pinned-cost { font-family: 'Consolas', monospace; font-size: 0.9em; color: var(--accent); }
+        .pinned-cost small { color: #666; font-family: inherit; margin-right: 6px; text-transform: uppercase; font-size: 0.75em; }
+        .goal-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+        .goal-chip {
+            display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px 5px 12px; border-radius: 999px;
+            background: var(--pin-soft); border: 1px solid rgba(90,169,230,0.35); color: #9fd0ff; font-size: 0.8em; font-weight: 700;
+            cursor: pointer; transition: all 0.15s;
+        }
+        .goal-chip:hover { border-color: var(--pin); }
+        .goal-chip.ready { background: var(--success-soft); border-color: rgba(76,175,80,0.4); color: #8fdc92; }
+        .goal-chip .x { color: #777; font-weight: 900; margin-left: 2px; }
+        .goal-chip .x:hover { color: var(--danger); }
+
+        .need-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+        .need-row {
+            display: grid; grid-template-columns: 44px 1fr auto; gap: 10px; align-items: center;
+            background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
+            position: relative; overflow: hidden; transition: all 0.18s ease;
+        }
+        .need-row:hover { border-color: var(--border-soft); box-shadow: var(--shadow); }
+        .need-row.done { background: #131c13; border-color: rgba(76,175,80,0.3); }
+        .need-row.done .need-name { color: #8fdc92; }
+        .need-thumb { width: 44px; height: 44px; object-fit: contain; background: #0d0d0d; border-radius: 6px; }
+        .need-info { min-width: 0; }
+        .need-name { color: #ddd; font-weight: 700; font-size: 0.95em; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .need-break { font-size: 0.72em; color: #777; margin-top: 3px; line-height: 1.35; }
+        .need-break b { color: #999; font-weight: 600; }
+        .need-maps { font-size: 0.7em; color: #6f6f6f; margin-top: 3px; }
+        .need-bar { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--accent); transition: width 0.2s; opacity: 0.85; }
+        .need-row.done .need-bar { background: var(--success); }
+        .need-ctrl { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        .need-total { font-family: 'Consolas', monospace; font-size: 0.8em; color: #888; }
+        .need-total b { color: var(--accent); font-size: 1.15em; }
+        .need-row.done .need-total b { color: var(--success); }
+
+        .badge {
+            display: inline-block; padding: 2px 7px; font-size: 0.65em; font-weight: 800; letter-spacing: 0.5px; border-radius: 999px;
+            border: 1px solid transparent; vertical-align: middle; line-height: 1.4;
+        }
+        .badge-fir { background: var(--warn); color: #000; }
+        .badge-lock { background: var(--danger-soft); color: #ff8a80; border-color: rgba(224,82,82,0.35); }
+        .badge-ok { background: var(--success-soft); color: #8fdc92; border-color: rgba(76,175,80,0.35); }
+        .badge-built { background: var(--success); color: #000; }
+        .badge-pin { background: var(--pin-soft); color: #9fd0ff; border-color: rgba(90,169,230,0.35); }
+        .badge-dim { background: #222; color: #888; border-color: #333; }
+
+        /* STEPPER */
+        .qty-stepper {
+            display: flex; align-items: stretch; width: fit-content;
+            border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden; background: #0c0c0c;
+        }
+        .qty-btn { width: 30px; height: 30px; background: #1c1c1c; color: #ccc; border: none; cursor: pointer; font-size: 1.1em; font-weight: 700; line-height: 1; transition: all 0.15s; }
+        .qty-btn:hover { background: #262626; }
+        .qty-minus:hover { color: var(--danger); }
+        .qty-plus:hover { color: var(--success); }
+        .qty-input {
+            width: 44px; text-align: center; border: none; border-left: 1px solid #333; border-right: 1px solid #333;
+            background: #0a0a0a; color: #fff; font-weight: 700; -moz-appearance: textfield; padding: 0;
+        }
+        .qty-input::-webkit-outer-spin-button, .qty-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+        /* --- TOOLBAR STACJI --- */
+        .stations-toolbar { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+        .section-title { color: #888; font-size: 1em; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+        .field-search { position: relative; }
+        .field-search input {
+            background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: var(--radius-sm);
+            padding: 9px 12px 9px 34px; width: 260px; outline: none; transition: border-color 0.15s;
+        }
+        .field-search input:focus { border-color: var(--accent); }
+        .field-search::before { content: "🔍"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%); font-size: 0.85em; opacity: 0.6; pointer-events: none; }
+        .filters { display: flex; gap: 6px; flex-wrap: wrap; }
+        .cat-btn {
+            background: #161616; border: 1px solid var(--border-soft); color: #888; padding: 8px 14px;
+            cursor: pointer; border-radius: 999px; font-weight: 700; font-size: 0.75em; letter-spacing: 0.4px; transition: all 0.15s;
+        }
+        .cat-btn:hover:not(.active) { border-color: #555; color: #ccc; }
+        .cat-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+        /* --- STACJE --- */
+        .stations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+        .station-card {
+            background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+            transition: all 0.18s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.3); overflow: hidden;
+        }
+        .station-card:hover { border-color: var(--border-soft); box-shadow: var(--shadow); }
+        .station-card.has-pin { border-color: rgba(90,169,230,0.35); }
+        .station-card.maxed { opacity: 0.6; }
+        .station-head { display: flex; align-items: center; gap: 12px; padding: 12px; cursor: pointer; user-select: none; }
+        .station-img { width: 48px; height: 48px; object-fit: contain; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.6)); }
+        .station-img.placeholder { display: flex; align-items: center; justify-content: center; font-size: 1.6em; background: #0d0d0d; border-radius: 8px; }
+        .station-meta { flex: 1; min-width: 0; }
+        .station-name { color: #ddd; font-weight: 700; font-size: 1.05em; }
+        .station-sub { font-size: 0.75em; color: #777; margin-top: 3px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .level-dots { display: flex; gap: 4px; }
+        .level-dot { width: 22px; height: 22px; border-radius: 6px; background: #222; border: 1px solid #333; color: #777; font-size: 0.7em; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+        .level-dot.built { background: var(--success); color: #000; border-color: var(--success); }
+        .level-dot.pinned { background: var(--pin-soft); color: #9fd0ff; border-color: var(--pin); }
+        .chevron { color: #666; font-size: 0.9em; transition: transform 0.2s; }
+        .station-card.open .chevron { transform: rotate(180deg); }
+
+        .station-body { display: none; border-top: 1px solid var(--border); padding: 6px 10px 10px; }
+        .station-card.open .station-body { display: block; }
+
+        .level { background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); margin-top: 6px; padding: 10px; }
+        .level.built { background: #131c13; border-color: rgba(76,175,80,0.3); }
+        .level.pinned { border-color: rgba(90,169,230,0.45); }
+        .level-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .level-title { font-weight: 800; color: var(--accent); font-size: 0.95em; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .level.built .level-title { color: #8fdc92; }
+        .level-actions { display: flex; gap: 6px; }
+        .lvl-btn {
+            background: #161616; border: 1px solid var(--border-soft); color: #999; padding: 6px 12px; border-radius: 999px;
+            font-weight: 700; font-size: 0.72em; letter-spacing: 0.3px; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+        }
+        .lvl-btn:hover { border-color: #666; color: #ddd; }
+        .lvl-btn.pin.active { background: var(--pin-soft); border-color: var(--pin); color: #9fd0ff; }
+        .lvl-btn.built.active { background: var(--success); border-color: var(--success); color: #000; }
+        .level-reqs { font-size: 0.75em; color: #777; margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .req-chip { background: #161616; border: 1px solid #2c2c2c; border-radius: 999px; padding: 2px 8px; }
+        .req-chip.unmet { border-color: rgba(224,82,82,0.35); color: #ff8a80; }
+        .req-chip.met { border-color: rgba(76,175,80,0.3); color: #8fdc92; }
+
+        .level-items { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+        .li { display: grid; grid-template-columns: 30px 1fr auto; gap: 8px; align-items: center; font-size: 0.85em; padding: 4px 6px; border-radius: 6px; }
+        .li:hover { background: #161616; }
+        .li.have-ok .li-name { color: #8fdc92; }
+        .li-thumb { width: 30px; height: 30px; object-fit: contain; }
+        .li-name { color: #ccc; font-weight: 600; display: flex; align-items: center; gap: 6px; min-width: 0; flex-wrap: wrap; }
+        .li-count { font-family: 'Consolas', monospace; color: var(--accent); font-weight: 700; white-space: nowrap; }
+        .li-count small { color: #666; font-weight: 400; margin-left: 4px; }
+        .level-items.empty { color: #666; font-size: 0.8em; font-style: italic; }
+
+        @media (max-width: 600px) {
+            .field-search input { width: 100%; }
+            .need-grid { grid-template-columns: 1fr; }
+            .stations-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="top-status-bar">
+        <div class="nav-bar" style="margin:0;">
+            <a href="/" class="nav-link">Loot</a>
+            <a href="/hideout" class="nav-link active">Hideout</a>
+            <a href="/kappa" class="nav-link">Kappa</a>
+            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy), wyczyści listę lootu i postęp Hideoutu (przypięte, zbudowane, licznik „mam”).\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
+                <button type="submit" class="wipe-btn" title="Reset postępu jak przy wipe'ie serwera">💀 Wipe</button>
+            </form>
+            <form action="/hideout/refresh" method="POST" style="margin:0;">
+                <button type="submit" class="refresh-btn" title="Pobierz ponownie dane hideoutu z tarkov.dev">🔄 Odśwież dane</button>
+            </form>
+        </div>
+
+        <div class="summary">
+            <div class="summary-stat"><span>Zbudowane poziomy</span><b id="sumBuilt">0 / 0</b></div>
+            <div class="summary-stat"><span>Przypięte cele</span><b id="sumPinned">0</b></div>
+            <div class="summary-stat"><span>Brakuje sztuk</span><b id="sumMissing" class="accent">0</b></div>
+        </div>
+    </div>
+
+    <div class="page">
+        <div class="pinned-panel">
+            <div class="pinned-head">
+                <div class="pinned-title">📌 Przypięte cele <span class="badge badge-dim" id="pinnedCount">0</span></div>
+                <div class="pinned-cost" id="pinnedCost"></div>
+            </div>
+            <div class="goal-chips" id="goalChips"></div>
+            <div class="need-grid" id="needGrid"></div>
+            <div class="empty-state" id="needEmpty">Nic nie przypięte. Rozwiń stację poniżej i kliknij „📌 Przypnij” przy poziomie, który chcesz zbudować.</div>
+        </div>
+
+        <div class="stations-toolbar">
+            <span class="section-title">Stacje</span>
+            <div class="filters">
+                <button class="cat-btn active" data-filter="all" onclick="setFilter('all', this)">WSZYSTKIE</button>
+                <button class="cat-btn" data-filter="todo" onclick="setFilter('todo', this)">DO ZBUDOWANIA</button>
+                <button class="cat-btn" data-filter="pinned" onclick="setFilter('pinned', this)">PRZYPIĘTE</button>
+                <button class="cat-btn" data-filter="maxed" onclick="setFilter('maxed', this)">UKOŃCZONE</button>
+            </div>
+            <div class="field-search"><input type="text" id="stationSearch" placeholder="Szukaj stacji lub przedmiotu..." oninput="renderStations()"></div>
+        </div>
+
+        <div class="stations-grid" id="stationsGrid"></div>
+        <div class="empty-state" id="stationsEmpty" style="display:none;">Brak danych o hideoucie. Kliknij „Odśwież dane” u góry (wymaga działającego API tarkov.dev).</div>
+    </div>
+
+    <div id="apiStatusBanner" class="api-status-banner"></div>
+
+    <script>
+        const DATA = <%- JSON.stringify(data).replace(/</g, '\\u003c') %>;
+        const CURRENCY = { 'Roubles': '₽', 'Dollars': '$', 'Euros': '€' };
+        const openStations = new Set(JSON.parse(localStorage.getItem('tarkov_hideout_open') || '[]'));
+        let currentFilter = localStorage.getItem('tarkov_hideout_filter') || 'all';
+
+        // --- STATUS API tarkov.dev (ten sam banner co na stronie głównej) ---
+        let apiStatusData = null;
+        async function pollApiStatus() { try { apiStatusData = await (await fetch('/api/status')).json(); } catch (e) { apiStatusData = null; } }
+        function renderApiBanner() {
+            const banner = document.getElementById('apiStatusBanner');
+            if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
+            banner.textContent = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dane hideoutu mogą być nieaktualne.`;
+            banner.classList.add('show');
+        }
+        setInterval(renderApiBanner, 1000); setInterval(pollApiStatus, 5000); pollApiStatus().then(renderApiBanner);
+
+        // --- HELPERY ---
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        const fmtNum = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+        const fmtCount = (item, n) => CURRENCY[item.name] ? `${fmtNum(n)} ${CURRENCY[item.name]}` : `×${fmtNum(n)}`;
+        const fmtPrice = n => n >= 1000000 ? (n / 1000000).toFixed(2) + 'm' : n >= 1000 ? (n / 1000).toFixed(0) + 'k' : String(n);
+        const fmtTime = s => { if (!s) return ''; const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60); return h > 0 ? `${h}h${m ? ' ' + m + 'm' : ''}` : `${m}m`; };
+        const haveOf = id => DATA.have[id] || 0;
+        const allLevels = () => DATA.stations.flatMap(s => s.levels.map(l => ({ ...l, station: s })));
+        const findLevel = id => allLevels().find(l => l.id === id);
+        const levelReady = lvl => lvl.items.length > 0 && lvl.items.every(i => haveOf(i.itemId) >= i.count);
+        function mapsText(info) { if (!info) return ''; return info === 'ALL' ? 'Dostępne na wszystkich mapach' : info.join(', '); }
+        async function post(url, body) {
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(body || {}) });
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        }
+
+        // --- PANEL PRZYPIĘTYCH: suma itemów ze wszystkich przypiętych poziomów ---
+        function aggregatePinned() {
+            const pinned = allLevels().filter(l => l.pinned && !l.built);
+            const agg = {};
+            pinned.forEach(l => l.items.forEach(i => {
+                if (!agg[i.itemId]) agg[i.itemId] = { ...i, total: 0, fir: 0, breakdown: [] };
+                agg[i.itemId].total += i.count;
+                if (i.fir) agg[i.itemId].fir = 1;
+                agg[i.itemId].breakdown.push({ label: `${l.station.name} ${l.level}`, count: i.count });
+            }));
+            return { pinned, items: Object.values(agg) };
+        }
+
+        function renderPinned() {
+            const { pinned, items } = aggregatePinned();
+            const chips = document.getElementById('goalChips'), grid = document.getElementById('needGrid');
+            document.getElementById('pinnedCount').textContent = pinned.length;
+            document.getElementById('needEmpty').style.display = pinned.length ? 'none' : '';
+
+            chips.innerHTML = pinned.map(l => `
+                <span class="goal-chip ${levelReady(l) ? 'ready' : ''}" onclick="scrollToStation('${esc(l.station.id)}')" title="${levelReady(l) ? 'Masz wszystko - można budować' : 'Kliknij, żeby przejść do stacji'}">
+                    ${levelReady(l) ? '✅' : '📌'} ${esc(l.station.name)} <b>${l.level}</b>
+                    <span class="x" title="Odepnij" onclick="event.stopPropagation(); togglePin('${esc(l.id)}')">✕</span>
+                </span>`).join('');
+
+            items.sort((a, b) => {
+                const da = haveOf(a.itemId) >= a.total, db = haveOf(b.itemId) >= b.total;
+                if (da !== db) return da ? 1 : -1;
+                return a.name.localeCompare(b.name);
+            });
+
+            let missingTotal = 0, cost = 0;
+            grid.innerHTML = items.map(i => {
+                const have = haveOf(i.itemId), done = have >= i.total, missing = Math.max(0, i.total - have);
+                if (!CURRENCY[i.name]) missingTotal += missing;
+                if (!CURRENCY[i.name] && !i.fir) cost += missing * (i.priceAvg || 0);
+                const pct = Math.min(100, Math.round((Math.min(have, i.total) / i.total) * 100));
+                const isCurrency = !!CURRENCY[i.name];
+                return `
+                <div class="need-row ${done ? 'done' : ''}" data-item="${esc(i.itemId)}">
+                    ${i.image ? `<img class="need-thumb" src="${esc(i.image)}" alt="">` : `<div class="need-thumb"></div>`}
+                    <div class="need-info">
+                        <div class="need-name">${esc(i.name)} ${i.fir ? '<span class="badge badge-fir" title="Found in Raid">FIR</span>' : ''}</div>
+                        <div class="need-break">${i.breakdown.map(b => `<b>${esc(b.label)}</b>: ${isCurrency ? fmtNum(b.count) : b.count}`).join(' · ')}</div>
+                        ${i.mapsInfo ? `<div class="need-maps">🗺️ ${esc(mapsText(i.mapsInfo))}</div>` : ''}
+                    </div>
+                    <div class="need-ctrl">
+                        <div class="need-total">${done ? '✓ ' : 'mam '}<b>${isCurrency ? fmtNum(have) : have}</b> / ${fmtCount(i, i.total)}</div>
+                        ${isCurrency ? `
+                        <button class="lvl-btn ${done ? 'built active' : ''}" onclick="setHave('${esc(i.itemId)}', ${done ? 0 : i.total})">${done ? 'Odłożone ✓' : 'Mam odłożone'}</button>` : `
+                        <div class="qty-stepper">
+                            <button type="button" class="qty-btn qty-minus" onclick="adjustHave('${esc(i.itemId)}', -1)">−</button>
+                            <input type="number" class="qty-input" min="0" value="${have}" onchange="setHave('${esc(i.itemId)}', this.value)">
+                            <button type="button" class="qty-btn qty-plus" onclick="adjustHave('${esc(i.itemId)}', 1)">+</button>
+                        </div>`}
+                    </div>
+                    <div class="need-bar" style="width:${pct}%"></div>
+                </div>`;
+            }).join('');
+
+            document.getElementById('pinnedCost').innerHTML = items.length ? `<small>do dokupienia ≈</small>${fmtNum(cost)} ₽` : '';
+            document.getElementById('sumPinned').textContent = pinned.length;
+            document.getElementById('sumMissing').textContent = fmtNum(missingTotal);
+        }
+
+        // --- STACJE ---
+        function stationMatches(s, q) {
+            if (!q) return true;
+            if (s.name.toLowerCase().includes(q)) return true;
+            return s.levels.some(l => l.items.some(i => i.name.toLowerCase().includes(q) || (i.shortName || '').toLowerCase().includes(q)));
+        }
+        function stationState(s) {
+            const builtMax = s.levels.filter(l => l.built).length;
+            return { builtMax, maxed: s.levels.length > 0 && builtMax === s.levels.length, hasPin: s.levels.some(l => l.pinned && !l.built) };
+        }
+
+        function renderStations() {
+            const q = document.getElementById('stationSearch').value.trim().toLowerCase();
+            const grid = document.getElementById('stationsGrid');
+            document.getElementById('stationsEmpty').style.display = DATA.stations.length ? 'none' : '';
+
+            let totalBuilt = 0, totalLevels = 0;
+            const cards = DATA.stations.filter(s => {
+                const st = stationState(s);
+                totalBuilt += st.builtMax; totalLevels += s.levels.length;
+                if (currentFilter === 'todo' && st.maxed) return false;
+                if (currentFilter === 'pinned' && !st.hasPin) return false;
+                if (currentFilter === 'maxed' && !st.maxed) return false;
+                return stationMatches(s, q);
+            }).map(s => {
+                const st = stationState(s);
+                const isOpen = openStations.has(s.id) || (q.length >= 2 && !s.name.toLowerCase().includes(q));
+                return `
+                <div class="station-card ${isOpen ? 'open' : ''} ${st.hasPin ? 'has-pin' : ''} ${st.maxed ? 'maxed' : ''}" id="station-${esc(s.id)}" data-id="${esc(s.id)}">
+                    <div class="station-head" onclick="toggleStation('${esc(s.id)}')">
+                        ${s.image ? `<img class="station-img" src="${esc(s.image)}" alt="">` : `<div class="station-img placeholder">🏠</div>`}
+                        <div class="station-meta">
+                            <div class="station-name">${esc(s.name)}</div>
+                            <div class="station-sub">
+                                <span>Poziom <b style="color:#ccc">${st.builtMax}</b> / ${s.levels.length}</span>
+                                ${st.maxed ? '<span class="badge badge-built">MAX</span>' : ''}
+                                ${st.hasPin ? '<span class="badge badge-pin">📌 przypięte</span>' : ''}
+                            </div>
+                        </div>
+                        <div class="level-dots">${s.levels.map(l => `<span class="level-dot ${l.built ? 'built' : l.pinned ? 'pinned' : ''}" title="Poziom ${l.level}${l.built ? ' - zbudowany' : l.pinned ? ' - przypięty' : ''}">${l.level}</span>`).join('')}</div>
+                        <span class="chevron">▼</span>
+                    </div>
+                    <div class="station-body">${s.levels.map(l => renderLevel(s, l, q)).join('')}</div>
+                </div>`;
+            });
+
+            grid.innerHTML = cards.join('') || `<div class="empty-state" style="grid-column:1/-1;">Nic nie pasuje do filtra / wyszukiwania.</div>`;
+            document.getElementById('sumBuilt').textContent = `${totalBuilt} / ${totalLevels}`;
+        }
+
+        function renderLevel(s, l, q) {
+            const ready = !l.built && levelReady(l);
+            const reqs = [
+                ...l.stationReqs.map(r => `<span class="req-chip ${r.met ? 'met' : 'unmet'}" title="${r.met ? 'Wymaganie spełnione' : 'Najpierw zbuduj tę stację'}">🏗 ${esc(r.stationName)} ${r.level}</span>`),
+                ...l.traderReqs.map(r => `<span class="req-chip">🤝 ${esc(r.name)} LL${r.level}</span>`),
+                ...l.skillReqs.map(r => `<span class="req-chip">📈 ${esc(r.name)} ${r.level}</span>`)
+            ];
+            if (l.constructionTime) reqs.push(`<span class="req-chip">⏱ ${fmtTime(l.constructionTime)}</span>`);
+
+            const items = l.items.map(i => {
+                const have = haveOf(i.itemId), ok = have >= i.count, hit = q && q.length >= 2 && (i.name.toLowerCase().includes(q) || (i.shortName || '').toLowerCase().includes(q));
+                return `
+                <div class="li ${ok ? 'have-ok' : ''}" style="${hit ? 'background:var(--accent-soft)' : ''}" title="${esc(i.name)}${i.mapsInfo ? ' · 🗺️ ' + esc(mapsText(i.mapsInfo)) : ''}">
+                    ${i.image ? `<img class="li-thumb" src="${esc(i.image)}" alt="">` : '<span></span>'}
+                    <span class="li-name">${esc(i.shortName || i.name)} ${i.fir ? '<span class="badge badge-fir">FIR</span>' : ''}</span>
+                    <span class="li-count">${fmtCount(i, i.count)}${!l.built && have > 0 ? `<small>mam ${CURRENCY[i.name] ? fmtNum(have) : have}</small>` : ''}</span>
+                </div>`;
+            }).join('');
+
+            return `
+            <div class="level ${l.built ? 'built' : ''} ${l.pinned && !l.built ? 'pinned' : ''}" data-level="${esc(l.id)}">
+                <div class="level-head">
+                    <div class="level-title">
+                        Poziom ${l.level}
+                        ${l.built ? '<span class="badge badge-built">ZBUDOWANY</span>' : ''}
+                        ${ready ? '<span class="badge badge-ok">✓ masz wszystko</span>' : ''}
+                        ${!l.built && l.locked ? '<span class="badge badge-lock">🔒 zablokowany</span>' : ''}
+                    </div>
+                    <div class="level-actions">
+                        ${l.built ? '' : `<button class="lvl-btn pin ${l.pinned ? 'active' : ''}" onclick="togglePin('${esc(l.id)}')">${l.pinned ? '📌 Przypięte' : '📌 Przypnij'}</button>`}
+                        <button class="lvl-btn built ${l.built ? 'active' : ''}" onclick="toggleBuilt('${esc(l.id)}')" title="${l.built ? 'Cofnij oznaczenie (ten i wyższe poziomy)' : 'Oznacz jako zbudowany (odejmie zużyte itemy z licznika „mam”)'}">${l.built ? '✓ Zbudowany' : 'Zbudowany'}</button>
+                    </div>
+                </div>
+                ${reqs.length ? `<div class="level-reqs">${reqs.join('')}</div>` : ''}
+                <div class="level-items ${l.items.length ? '' : 'empty'}">${items || 'Brak wymaganych przedmiotów'}</div>
+            </div>`;
+        }
+
+        function renderAll() { renderPinned(); renderStations(); }
+
+        function toggleStation(id) {
+            if (openStations.has(id)) openStations.delete(id); else openStations.add(id);
+            localStorage.setItem('tarkov_hideout_open', JSON.stringify([...openStations]));
+            const card = document.getElementById('station-' + id);
+            if (card) card.classList.toggle('open', openStations.has(id));
+        }
+        function scrollToStation(id) {
+            openStations.add(id);
+            localStorage.setItem('tarkov_hideout_open', JSON.stringify([...openStations]));
+            renderStations();
+            const card = document.getElementById('station-' + id);
+            if (card) { card.scrollIntoView({ behavior: 'smooth', block: 'start' }); card.style.boxShadow = '0 0 0 2px var(--pin)'; setTimeout(() => card.style.boxShadow = '', 1200); }
+        }
+        function setFilter(f, btn) {
+            currentFilter = f; localStorage.setItem('tarkov_hideout_filter', f);
+            document.querySelectorAll('.cat-btn').forEach(b => b.classList.toggle('active', b === btn || (!btn && b.dataset.filter === f)));
+            renderStations();
+        }
+
+        // --- AKCJE (optymistycznie: najpierw UI, potem serwer; przy błędzie przeładowanie) ---
+        async function togglePin(levelId) {
+            const lvl = findLevel(levelId); if (!lvl) return;
+            const target = DATA.stations.find(s => s.id === lvl.station.id).levels.find(l => l.id === levelId);
+            target.pinned = !target.pinned;
+            renderAll();
+            try { const r = await post(`/api/hideout/levels/${encodeURIComponent(levelId)}/pin`); if (r.pinned !== target.pinned) { target.pinned = r.pinned; renderAll(); } }
+            catch (e) { console.error(e); location.reload(); }
+        }
+
+        async function toggleBuilt(levelId) {
+            try {
+                const r = await post(`/api/hideout/levels/${encodeURIComponent(levelId)}/built`);
+                const byId = {}; r.levels.forEach(l => byId[l.id] = l);
+                DATA.stations.forEach(s => s.levels.forEach(l => { if (byId[l.id]) { l.built = byId[l.id].built; l.pinned = byId[l.id].pinned; } }));
+                Object.assign(DATA.have, r.have || {});
+                recomputeLocks();
+                renderAll();
+            } catch (e) { console.error(e); location.reload(); }
+        }
+
+        // po zmianie "zbudowane" przelicz blokady (wymagania innych stacji) bez odpytywania serwera
+        function recomputeLocks() {
+            const builtMax = {};
+            DATA.stations.forEach(s => { builtMax[s.id] = s.levels.filter(l => l.built).reduce((m, l) => Math.max(m, l.level), 0); });
+            DATA.stations.forEach(s => s.levels.forEach(l => {
+                l.stationReqs.forEach(r => { r.met = (builtMax[r.stationId] || 0) >= r.level; });
+                l.locked = l.stationReqs.some(r => !r.met);
+            }));
+        }
+
+        function applyHave(itemId, value) { DATA.have[itemId] = value; renderAll(); }
+        async function adjustHave(itemId, delta) {
+            const next = Math.max(0, haveOf(itemId) + delta);
+            applyHave(itemId, next);
+            try { const r = await post(`/api/hideout/have/${encodeURIComponent(itemId)}`, { value: next }); if (r.have !== next) applyHave(itemId, r.have); }
+            catch (e) { console.error(e); location.reload(); }
+        }
+        async function setHave(itemId, value) {
+            let next = parseInt(value); if (isNaN(next) || next < 0) next = 0;
+            applyHave(itemId, next);
+            try { const r = await post(`/api/hideout/have/${encodeURIComponent(itemId)}`, { value: next }); if (r.have !== next) applyHave(itemId, r.have); }
+            catch (e) { console.error(e); location.reload(); }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setFilter(currentFilter, null);
+            renderAll();
+        });
+    </script>
+</body>
+</html>
