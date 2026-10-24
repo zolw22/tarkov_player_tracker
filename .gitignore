@@ -3,3 +3,6 @@ node_modules/
 _test/
 .claude/
 *.log
+logwatcher/logwatcher-state.json
+logwatcher/logwatcher-state.json.tmp
+logwatcher/config.json

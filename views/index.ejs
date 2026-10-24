@@ -260,7 +260,7 @@
             <a href="/" class="nav-link active">Loot</a>
             <a href="/hideout" class="nav-link">Hideout</a>
             <a href="/kappa" class="nav-link">Kappa</a>
-            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy) oraz wyczyści tę listę lootu i postęp Hideoutu (przypięte, zbudowane, licznik „mam”).\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
+            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy) oraz wyczyści tę listę lootu i postęp Hideoutu (przypięte, zbudowane, licznik „mam”).\n\nSkrypt logów na PC od tego momentu liczy tylko nowo ukończone questy.\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
                 <button type="submit" class="wipe-btn" title="Reset postępu jak przy wipe'ie serwera">💀 Wipe</button>
             </form>
         </div>
@@ -759,5 +759,6 @@
         }
         document.addEventListener('click', function(e) { if (e.target !== nameInput) suggestionsBox.style.display = 'none'; });
     </script>
+    <script src="/logwatcher-status.js"></script>
 </body>
 </html>

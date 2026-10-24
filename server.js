@@ -34,7 +34,8 @@ const STANDARD_MAPS = ['Customs', 'Factory', 'Woods', 'Lighthouse', 'Shoreline',
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static('public'));
+app.use(bodyParser.json({ limit: '2mb' })); // skrypt logów z PC wysyła JSON
+app.use(express.static(path.join(__dirname, 'public')));
 
 const SYNC_INTERVAL = 12 * 60 * 60 * 1000; // 12h
 const PRICES_INTERVAL = 10 * 60 * 1000;    // 10 min
@@ -56,6 +57,18 @@ const db = new sqlite3.Database('./tarkov_tracker.db', (err) => {
     }
 });
 
+// tarkov_tracker_backup_2026-10-24T22-32-54-518Z.db -> ms (najnowszy backup = ostatni wipe)
+function latestWipeBackupTime() {
+    try {
+        const times = fs.readdirSync(process.cwd())
+            .map(f => f.match(/^tarkov_tracker_backup_(\d{4}-\d\d-\d\d)T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z\.db$/))
+            .filter(Boolean)
+            .map(m => Date.parse(`${m[1]}T${m[2]}:${m[3]}:${m[4]}.${m[5]}Z`))
+            .filter(t => !isNaN(t));
+        return times.length ? Math.max(...times) : 0;
+    } catch (e) { return 0; }
+}
+
 function initializeDatabase() {
     db.serialize(() => {
         db.run(`CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, quantity INTEGER, category TEXT, image TEXT, is_fir INTEGER DEFAULT 0)`);
@@ -75,6 +88,21 @@ function initializeDatabase() {
         // postęp użytkownika: przypięte/zbudowane poziomy + ile sztuk danego itemu już ma
         db.run(`CREATE TABLE IF NOT EXISTS hideout_progress (level_id TEXT PRIMARY KEY, pinned INTEGER DEFAULT 0, built INTEGER DEFAULT 0)`);
         db.run(`CREATE TABLE IF NOT EXISTS hideout_have (item_id TEXT PRIMARY KEY, have INTEGER DEFAULT 0)`);
+
+        // --- SKRYPT LOGÓW (PC) ---
+        // app_settings: m.in. wipe_at (ms) - questy ukończone przed ostatnim wipe'em są ignorowane
+        db.run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)`);
+        // ukończone questy zgłoszone przez skrypt czytający logi gry (id questu = id z tarkov.dev/BSG)
+        db.run(`CREATE TABLE IF NOT EXISTS quest_completions (quest_id TEXT PRIMARY KEY, name TEXT, completed_at INTEGER, received_at INTEGER)`);
+        // wipe zrobiony wersją bez wipe_at (albo baza sprzed tej funkcji): datę bierzemy z nazwy
+        // najnowszego backupu, który /wipe zawsze tworzy - inaczej skrypt logów odhaczyłby questy sprzed wipe'a
+        db.get("SELECT value FROM app_settings WHERE key = 'wipe_at'", [], (err, row) => {
+            if (err || row) return;
+            const t = latestWipeBackupTime();
+            if (!t) return;
+            db.run("INSERT OR IGNORE INTO app_settings (key, value) VALUES ('wipe_at', ?)", [String(t)],
+                () => console.log(`🧨 [WIPE] Data ostatniego wipe'a odtworzona z backupu: ${new Date(t).toISOString()}`));
+        });
 
         db.run(`CREATE TABLE IF NOT EXISTS kappa_tracker (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,7 +129,8 @@ function initializeDatabase() {
                     "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'",
                     "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
-                    "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''"
+                    "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''",
+                    "ALTER TABLE kappa_tracker ADD COLUMN task_id TEXT DEFAULT ''"
                 ];
                 let done = 0;
                 migrations.forEach(sql => db.run(sql, () => {
@@ -535,12 +564,12 @@ async function syncKappaWithAPI() {
         const collectorTask = allTasks.find(t => t.name === "Collector");
         const fenceImage = collectorTask && collectorTask.trader ? collectorTask.trader.imageLink : '';
         const collectorItems = collectorTask ? collectorTask.objectives.filter(obj => obj.item).map(obj => ({
-            name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: '', reqNames: '[]'
+            name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: '', reqNames: '[]', task_id: ''
         })) : [];
         const requiredTasks = allTasks.filter(t => t.kappaRequired === true).map(t => {
             const reqNames = t.taskRequirements.map(r => r.task.name);
             return {
-                name: t.name, image: '', type: 'quest', min_level: t.minPlayerLevel || 0, trader: t.trader ? t.trader.name : '?', trader_image: t.trader ? t.trader.imageLink : '', faction: t.factionName || 'Any', map: t.map ? t.map.name : 'Any', wiki_link: t.wikiLink || '', req: reqNames.length ? `Wymaga: ${reqNames.join(", ")}` : 'Startowy', reqNames: JSON.stringify(reqNames)
+                name: t.name, image: '', type: 'quest', min_level: t.minPlayerLevel || 0, trader: t.trader ? t.trader.name : '?', trader_image: t.trader ? t.trader.imageLink : '', faction: t.factionName || 'Any', map: t.map ? t.map.name : 'Any', wiki_link: t.wikiLink || '', req: reqNames.length ? `Wymaga: ${reqNames.join(", ")}` : 'Startowy', reqNames: JSON.stringify(reqNames), task_id: t.id || ''
             };
         });
         
@@ -552,9 +581,9 @@ async function syncKappaWithAPI() {
         const upsert = (item) => new Promise((resolve) => {
             db.get("SELECT id FROM kappa_tracker WHERE name = ?", [item.name], (err, row) => {
                 if (!row) {
-                    db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image, requirement_names) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames], () => resolve(1));
+                    db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image, requirement_names, task_id) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id], () => resolve(1));
                 } else {
-                    db.run(`UPDATE kappa_tracker SET min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=?, requirement_names=? WHERE id=?`, [item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, row.id], () => resolve(0));
+                    db.run(`UPDATE kappa_tracker SET min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=?, requirement_names=?, task_id=? WHERE id=?`, [item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id, row.id], () => resolve(0));
                 }
             });
         });
@@ -794,6 +823,70 @@ app.post('/api/hideout/have/:itemId', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// --- SKRYPT LOGÓW (logwatcher na PC) ---
+// Skrypt na PC czyta logi powiadomień gry (tylko pliki tekstowe, nic w pamięci gry) i zgłasza tu
+// ukończone questy. Heartbeat co ~20s - na jego podstawie strony pokazują, czy skrypt działa.
+const LOGWATCHER_TIMEOUT = 90 * 1000; // brak sygnału dłużej niż tyle = "rozłączony"
+const logwatcher = { lastSeen: null, version: null, host: null };
+
+async function getWipeAt() {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'wipe_at'");
+    return row ? Number(row.value) || 0 : 0;
+}
+
+app.post('/api/logwatcher/heartbeat', async (req, res) => {
+    logwatcher.lastSeen = Date.now();
+    logwatcher.version = (req.body && req.body.version) || null;
+    logwatcher.host = (req.body && req.body.host) || req.ip;
+    try { res.json({ ok: true, wipeAt: await getWipeAt() }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// body: { events: [{ questId, at }] } - at = ms (czas z serwera BSG zapisany w powiadomieniu)
+app.post('/api/logwatcher/quests', async (req, res) => {
+    logwatcher.lastSeen = Date.now();
+    try {
+        const events = Array.isArray(req.body && req.body.events) ? req.body.events : [];
+        const wipeAt = await getWipeAt();
+        let accepted = 0, old = 0, unknown = 0;
+        const kappaMarked = [];
+        for (const ev of events) {
+            const questId = String(ev.questId || '');
+            const at = Number(ev.at) || 0;
+            if (!/^[0-9a-f]{24}$/i.test(questId)) continue;
+            if (at < wipeAt) { old++; continue; }
+            const exists = await dbGet("SELECT quest_id FROM quest_completions WHERE quest_id = ?", [questId]);
+            if (exists) continue;
+            const task = await dbGet("SELECT name FROM tarkov_tasks_cache WHERE id = ?", [questId]);
+            if (!task) unknown++; // np. dzienne/tygodniowe - nie ma ich w tarkov.dev
+            await dbRun("INSERT OR IGNORE INTO quest_completions (quest_id, name, completed_at, received_at) VALUES (?, ?, ?, ?)", [questId, task ? task.name : '', at, Date.now()]);
+            accepted++;
+            // odhacz w Kappie: po id questu, a gdy wiersz go jeszcze nie ma (sprzed tej wersji) - po nazwie
+            const name = task ? task.name : '';
+            const row = await dbGet("SELECT id, name, is_collected FROM kappa_tracker WHERE type = 'quest' AND (task_id = ? OR (? <> '' AND name = ?)) ORDER BY (task_id = ?) DESC LIMIT 1", [questId, name, name, questId]);
+            if (row && row.is_collected !== 2) {
+                await dbRun("UPDATE kappa_tracker SET is_collected = 2, is_new = 0 WHERE id = ?", [row.id]);
+                kappaMarked.push(row.name);
+            }
+        }
+        if (accepted > 0) console.log(`📜 [LOGI] Skrypt zgłosił ${accepted} nowych ukończonych questów (Kappa odhaczone: ${kappaMarked.length}${kappaMarked.length ? ' - ' + kappaMarked.slice(0, 5).join(', ') + (kappaMarked.length > 5 ? '...' : '') : ''}).`);
+        res.json({ ok: true, accepted, ignoredBeforeWipe: old, unknown, kappaMarked });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/logwatcher/status', async (req, res) => {
+    try {
+        const last = await dbGet("SELECT name, completed_at FROM quest_completions WHERE name <> '' ORDER BY completed_at DESC LIMIT 1");
+        const count = await dbGet("SELECT count(*) AS c FROM quest_completions");
+        res.json({
+            connected: !!logwatcher.lastSeen && (Date.now() - logwatcher.lastSeen) < LOGWATCHER_TIMEOUT,
+            lastSeen: logwatcher.lastSeen, version: logwatcher.version,
+            lastQuest: last ? { name: last.name, at: last.completed_at } : null,
+            questsSinceWipe: count ? count.c : 0,
+            wipeAt: await getWipeAt()
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // --- WIPE (reset postępu, jak przy wipe'ie serwera w grze) ---
 app.post('/wipe', (req, res) => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -811,8 +904,11 @@ app.post('/wipe', (req, res) => {
             db.run("DELETE FROM items");
             db.run("DELETE FROM hideout_progress");
             db.run("DELETE FROM hideout_have");
+            // od teraz skrypt logów liczy tylko questy ukończone po tym momencie
+            db.run("DELETE FROM quest_completions");
+            db.run("INSERT INTO app_settings (key, value) VALUES ('wipe_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(Date.now())]);
             db.run("COMMIT", () => {
-                console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu + hideout).");
+                console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu + hideout + questy ze skryptu logów).");
                 res.redirect('/kappa');
             });
         });
