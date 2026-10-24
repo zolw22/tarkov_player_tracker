@@ -235,6 +235,22 @@
             border-radius: var(--radius-sm); cursor: pointer; font-size: 0.95em; transition: all 0.15s;
         }
         .btn-icon-danger:hover { background: var(--danger); color: #fff; }
+
+        /* AUTOMATYCZNE KARTY Z PRZYPIĘTYCH CELÓW HIDEOUTU */
+        .item-card.auto-card { border-color: rgba(90,169,230,0.35); background: linear-gradient(180deg, rgba(90,169,230,0.06), var(--panel-2) 40%); }
+        .item-card.auto-card:hover { border-color: rgba(90,169,230,0.6); }
+        .auto-badge {
+            display: inline-block; margin-bottom: 6px; padding: 2px 9px; border-radius: 999px; font-size: 0.7em; font-weight: 700;
+            background: rgba(90,169,230,0.14); border: 1px solid rgba(90,169,230,0.35); color: #9fd0ff; text-decoration: none;
+            max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+        }
+        .auto-badge:hover { border-color: #5aa9e6; }
+        .auto-fir { cursor: default; margin-right: 6px; vertical-align: middle; }
+        .auto-progress { font-family: 'Consolas', monospace; font-size: 0.8em; color: #888; white-space: nowrap; }
+        .auto-progress b { color: var(--accent); }
+        .item-card.auto-card.leaving { opacity: 0; transform: scale(0.95); }
+        .column.items-grid .auto-badge { font-size: 0.62em; margin: 14px 0 4px; }
+        .column.items-grid .auto-progress { font-size: 0.7em; }
     </style>
 </head>
 <body>
@@ -311,6 +327,49 @@
                     <span class="cat-title"><%= cat %></span>
                     <span class="cat-total" id="total-<%= cat %>">0 ₽</span>
                 </div>
+
+                <% if (cat === 'Hideout') { hideoutNeeds.forEach(need => { %>
+                    <%# automatycznie z przypiętych celów na stronie Hideout - ilość = ile jeszcze brakuje %>
+                    <div class="item-card auto-card"
+                         data-item-id="<%= need.itemId %>"
+                         data-name="<%= need.name %>"
+                         data-qty="<%= need.missing %>"
+                         data-total="<%= need.total %>"
+                         data-have="<%= need.have %>"
+                         data-fir="<%= need.fir %>"
+                         data-cat="Hideout">
+
+                        <% if (need.fir) { %><span class="fir-chip active auto-fir" title="Musi być Found in Raid">FIR</span><% } %>
+                        <a href="/hideout" class="auto-badge" title="Dodane automatycznie z przypiętych celów na stronie Hideout">📌 <%= need.goals.join(' · ') %></a>
+
+                        <div class="card-header">
+                            <div class="name-wrapper">
+                                <% if(need.image) { %> <img src="<%= need.image %>" class="item-thumb" alt=""> <% } %>
+                                <div class="item-info">
+                                    <span class="item-name"><%= need.name %></span>
+                                    <span class="item-qty">x<%= need.missing %></span>
+                                </div>
+                            </div>
+                            <span class="auto-progress" title="Masz / potrzeba łącznie">mam <b><%= need.have %></b> / <%= need.total %></span>
+                        </div>
+
+                        <% if (need.mapsInfo) { %>
+                            <div class="maps-info" title="Gdzie przedmiot się znajduje (loose loot)">
+                                🗺️ <%= need.mapsInfo === 'ALL' ? 'Dostępne na wszystkich mapach' : need.mapsInfo.join(', ') %>
+                            </div>
+                        <% } %>
+
+                        <div class="price-section" style="<%= need.fir ? 'display:none' : '' %>">
+                            <span class="price-unit">...</span>
+                        </div>
+
+                        <div class="qty-stepper" title="Minus = znalazłeś/masz o jeden więcej">
+                            <button type="button" class="qty-btn qty-minus" onclick="adjustNeed(this, -1)">−</button>
+                            <input type="number" class="qty-input" min="0" value="<%= need.missing %>" onchange="setNeed(this)">
+                            <button type="button" class="qty-btn qty-plus" onclick="adjustNeed(this, 1)">+</button>
+                        </div>
+                    </div>
+                <% }) } %>
 
                 <% categories[cat].forEach(item => {
                     const isDone = item.quantity === 0;
@@ -486,7 +545,8 @@
                 const qty = parseInt(card.dataset.qty);
                 const fir = parseInt(card.dataset.fir);
                 const cat = card.dataset.cat;
-                const priceDiv = document.getElementById(`price-${name.replace(/[^a-zA-Z0-9]/g, '')}`);
+                // szukamy w obrębie karty (nie po id z nazwy) - ten sam item może być i ręcznie, i z Hideoutu
+                const priceDiv = card.querySelector('.price-section');
 
                 if (qty === 0 || fir === 1) return;
 
@@ -651,6 +711,48 @@
             } catch (e) { console.error(e); card.style.opacity = ''; card.style.transform = ''; }
         }
 
+        // --- AUTOMATYCZNE KARTY HIDEOUTU: stepper pokazuje "brakuje", a zapisuje licznik "mam" ---
+        // minus = brakuje o jeden mniej = masz o jeden więcej. Ten sam licznik co na stronie Hideout.
+        function needSync(card, have) {
+            const total = parseInt(card.dataset.total) || 0;
+            const missing = Math.max(0, total - have);
+            card.dataset.have = have;
+            card.dataset.qty = missing;
+            card.querySelector('.item-qty').textContent = 'x' + missing;
+            card.querySelector('.qty-input').value = missing;
+            card.querySelector('.auto-progress b').textContent = have;
+            if (missing === 0 && !card.classList.contains('leaving')) {
+                card.classList.add('leaving'); // komplet - karta znika (zostaje widoczna na stronie Hideout)
+                setTimeout(() => { card.remove(); updateEmptyStates(); renderPrices(); }, 200);
+            }
+            renderPrices();
+        }
+        async function saveNeed(card, have) {
+            needSync(card, have);
+            try {
+                const res = await fetch(`/api/hideout/have/${encodeURIComponent(card.dataset.itemId)}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ value: have })
+                });
+                const data = await res.json();
+                if (data.have !== have && card.isConnected) needSync(card, data.have);
+            } catch (e) { console.error(e); }
+        }
+        function adjustNeed(btn, delta) {
+            const card = btn.closest('.item-card');
+            const total = parseInt(card.dataset.total) || 0;
+            const have = parseInt(card.dataset.have) || 0;
+            // delta to zmiana "brakuje": -1 => mam +1; +1 => mam -1
+            saveNeed(card, Math.min(total, Math.max(0, have - delta)));
+        }
+        function setNeed(input) {
+            const card = input.closest('.item-card');
+            const total = parseInt(card.dataset.total) || 0;
+            let missing = parseInt(input.value);
+            if (isNaN(missing) || missing < 0) missing = 0;
+            saveNeed(card, Math.max(0, total - Math.min(missing, total)));
+        }
+
         function updateEmptyStates() {
             document.querySelectorAll('.column').forEach(col => {
                 const hasItems = col.querySelector('.item-card') !== null;
@@ -671,7 +773,8 @@
         let dragRAF = null;
 
         function findInsertTarget(column, x, y) {
-            const cards = [...column.querySelectorAll('.item-card:not(.dragging)')];
+            // karty automatyczne (z Hideoutu) zawsze zostają na górze - nie są celem upuszczenia
+            const cards = [...column.querySelectorAll('.item-card:not(.dragging):not(.auto-card)')];
             for (const card of cards) {
                 const r = card.getBoundingClientRect();
                 if (y < r.top) return card;                                    // wyraźnie nad tym rzędem
@@ -725,7 +828,7 @@
 
         async function persistOrder(column) {
             if (!column) return;
-            const ids = Array.from(column.querySelectorAll('.item-card')).map(c => c.dataset.id);
+            const ids = Array.from(column.querySelectorAll('.item-card:not(.auto-card)')).map(c => c.dataset.id);
             try {
                 await fetch('/api/items/reorder', {
                     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

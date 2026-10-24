@@ -609,7 +609,9 @@ app.get('/', (req, res) => {
             else r.mapsInfo = maps;
         });
         const categories = { 'Hideout': rows.filter(r => r.category === 'Hideout'), 'Crafting': rows.filter(r => r.category === 'Crafting'), 'Misje': rows.filter(r => r.category === 'Misje') };
-        res.render('index', { categories });
+        loadPinnedHideoutNeeds()
+            .then(hideoutNeeds => res.render('index', { categories, hideoutNeeds }))
+            .catch(e => { console.error("❌ [LOOT] Błąd liczenia potrzeb hideoutu:", e.message); res.render('index', { categories, hideoutNeeds: [] }); });
     });
 });
 
@@ -753,6 +755,45 @@ async function loadHideoutData() {
         stations: stations.map(s => ({ id: s.id, name: s.name, image: s.image, levels: levelsByStation[s.id] || [] })),
         have
     };
+}
+
+// Brakujące itemy do przypiętych (niezbudowanych) poziomów hideoutu - pokazywane automatycznie
+// w kategorii Hideout na stronie Loot. Ten sam licznik "mam" (hideout_have) co strona Hideout.
+// Waluty pomijamy - to nie loot do szukania.
+const CURRENCY_IDS = ['5449016a4bdc2d6f028b456f', '5696686a4bdc2da3298b456a', '569668774bdc2da2298b4568']; // ₽ $ €
+async function loadPinnedHideoutNeeds() {
+    const [rows, haveRows] = await Promise.all([
+        dbAll(`SELECT li.item_id, li.count, li.fir, s.name AS station, l.level, c.name, c.image, c.maps
+               FROM hideout_progress p
+               JOIN hideout_levels l ON l.id = p.level_id
+               JOIN hideout_stations s ON s.id = l.station_id
+               JOIN hideout_level_items li ON li.level_id = l.id
+               LEFT JOIN tarkov_items_cache c ON c.id = li.item_id
+               WHERE p.pinned = 1 AND p.built = 0
+               ORDER BY s.name, l.level`),
+        dbAll("SELECT item_id, have FROM hideout_have")
+    ]);
+    const have = {}; haveRows.forEach(h => { have[h.item_id] = h.have; });
+    const agg = {};
+    rows.forEach(r => {
+        if (CURRENCY_IDS.includes(r.item_id)) return;
+        if (!agg[r.item_id]) {
+            const maps = parseJson(r.maps, []);
+            agg[r.item_id] = {
+                itemId: r.item_id, name: r.name || `Nieznany przedmiot (${r.item_id})`, image: r.image || '',
+                mapsInfo: maps.length === 0 ? null : (STANDARD_MAPS.every(m => maps.includes(m)) ? 'ALL' : maps),
+                total: 0, fir: 0, goals: []
+            };
+        }
+        const a = agg[r.item_id];
+        a.total += r.count;
+        if (r.fir) a.fir = 1;
+        a.goals.push(`${r.station} ${r.level}`);
+    });
+    return Object.values(agg)
+        .map(a => ({ ...a, have: have[a.itemId] || 0, missing: Math.max(0, a.total - (have[a.itemId] || 0)) }))
+        .filter(a => a.missing > 0)
+        .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 app.get('/hideout', async (req, res) => {
