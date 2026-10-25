@@ -141,6 +141,25 @@
         .cat-total { font-family: 'Consolas', monospace; font-size: 0.9em; color: var(--accent); }
         .empty-state { text-align: center; color: #555; font-size: 0.85em; padding: 24px 10px; font-style: italic; }
 
+        /* FILTR LISTY */
+        .filter-bar { display: flex; justify-content: center; align-items: center; gap: 12px; margin: -6px auto 16px; max-width: 1100px; flex-wrap: wrap; }
+        .filter-search { flex: 1; max-width: 520px; }
+        .filter-search input {
+            width: 100%; background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: 999px;
+            padding: 10px 38px 10px 36px; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .filter-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .filter-search.active input { border-color: var(--accent); }
+        .filter-clear {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: none;
+            background: #222; color: #aaa; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 0.75em;
+        }
+        .filter-clear:hover { background: var(--danger); color: #fff; }
+        .filter-search.active .filter-clear { display: block; }
+        .filter-count { font-size: 0.8em; color: #888; white-space: nowrap; }
+        .filter-count b { color: var(--accent); }
+        .item-card.filtered-out { display: none !important; }
+
         /* KARTA ITEMU */
         .item-card {
             background: var(--panel-2); margin: 8px 0; padding: 12px; border-radius: var(--radius);
@@ -319,6 +338,15 @@
             <label class="fir-toggle"><input type="checkbox" name="fir"><span>FIR</span></label>
             <button type="submit" class="btn-primary">+ Dodaj</button>
         </form>
+    </div>
+
+    <%# filtr listy: zawęża widoczne karty we wszystkich kategoriach (nazwa, mapy, cele z Hideoutu) %>
+    <div class="filter-bar">
+        <div class="field-search filter-search">
+            <input type="text" id="lootFilter" placeholder="Filtruj listę: przedmiot, mapa, stacja hideoutu…" autocomplete="off" oninput="setLootFilter(this.value)" onkeydown="if(event.key==='Escape'){this.value='';setLootFilter('');}">
+            <button type="button" class="filter-clear" id="lootFilterClear" title="Wyczyść filtr" onclick="const i=document.getElementById('lootFilter'); i.value=''; setLootFilter(''); i.focus();">✕</button>
+        </div>
+        <span class="filter-count" id="lootFilterCount"></span>
     </div>
 
     <div id="mainContainer" class="container layout-list">
@@ -754,11 +782,36 @@
             saveNeed(card, Math.max(0, total - Math.min(missing, total)));
         }
 
+        // --- FILTR LISTY: każde słowo musi wystąpić w nazwie, mapach albo celach z Hideoutu ---
+        let lootFilter = '';
+        function cardMatchesFilter(card) {
+            if (!lootFilter) return true;
+            const badge = card.querySelector('.auto-badge');
+            const maps = card.querySelector('.maps-info');
+            const hay = [card.dataset.name, badge ? badge.textContent : '', maps ? maps.textContent : ''].join(' ').toLowerCase();
+            return lootFilter.split(/\s+/).every(w => hay.includes(w));
+        }
+        function applyLootFilter() {
+            let shown = 0, total = 0;
+            document.querySelectorAll('.item-card').forEach(card => {
+                const ok = cardMatchesFilter(card);
+                card.classList.toggle('filtered-out', !ok);
+                total++; if (ok) shown++;
+            });
+            document.querySelector('.filter-search').classList.toggle('active', !!lootFilter);
+            document.getElementById('lootFilterCount').innerHTML = lootFilter ? `Pasuje: <b>${shown}</b> z ${total}` : '';
+            updateEmptyStates();
+        }
+        function setLootFilter(v) { lootFilter = String(v || '').trim().toLowerCase(); applyLootFilter(); }
+
         function updateEmptyStates() {
             document.querySelectorAll('.column').forEach(col => {
-                const hasItems = col.querySelector('.item-card') !== null;
+                const hasAny = col.querySelector('.item-card') !== null;
+                const hasVisible = col.querySelector('.item-card:not(.filtered-out)') !== null;
                 const empty = col.querySelector('.empty-state');
-                if (empty) empty.style.display = hasItems ? 'none' : '';
+                if (!empty) return;
+                empty.style.display = hasVisible ? 'none' : '';
+                empty.textContent = (hasAny && lootFilter) ? 'Nic w tej kategorii nie pasuje do filtra' : 'Brak przedmiotów w tej kategorii';
             });
         }
 
