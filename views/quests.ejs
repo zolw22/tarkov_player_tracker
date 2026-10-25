@@ -211,6 +211,7 @@
                 </div>
             </div>
             <div class="filters" id="traderFilters"></div>
+            <div class="filters" id="mapFilters"></div>
         </div>
 
         <div id="questList"></div>
@@ -234,6 +235,15 @@
         const TRADER_ORDER = ['Prapor', 'Therapist', 'Fence', 'Skier', 'Peacekeeper', 'Mechanic', 'Ragman', 'Jaeger', 'Ref', 'Lightkeeper', 'BTR Driver'];
         const traderRank = t => { const i = TRADER_ORDER.findIndex(x => x.toLowerCase() === String(t).toLowerCase()); return i < 0 ? 100 : i; };
         const byTrader = (a, b) => (traderRank(a) - traderRank(b)) || a.localeCompare(b);
+
+        // mapy: '' w danych = quest bez konkretnej mapy (dowolna / poza raidem)
+        let mapFilter = load('tarkov_q_map', 'all');
+        const ANY_MAP = '__any__';
+        const MAP_ORDER = ['Ground Zero', 'Customs', 'Factory', 'Woods', 'Interchange', 'Shoreline', 'Reserve', 'Lighthouse', 'Streets of Tarkov', 'The Lab', 'The Labyrinth'];
+        const mapRank = m => { const i = MAP_ORDER.findIndex(x => x.toLowerCase() === String(m).toLowerCase()); return i < 0 ? 100 : i; };
+        const byMap = (a, b) => (mapRank(a) - mapRank(b)) || a.localeCompare(b);
+        const questMapKey = q => q.map || ANY_MAP;
+        function matchesMap(q) { return mapFilter === 'all' || questMapKey(q) === mapFilter; }
 
         // --- STATUS API tarkov.dev ---
         let apiStatusData = null;
@@ -276,6 +286,21 @@
             if (!s) return true;
             if (q.name.toLowerCase().includes(s)) return true;
             return q.give.some(g => g.items.some(i => (i.name || '').toLowerCase().includes(s) || (i.shortName || '').toLowerCase().includes(s)));
+        }
+
+        // liczniki przy mapach: ile questów na danej mapie pasuje do pozostałych filtrów (z wybranym stanem)
+        function renderMapFilters(preMap) {
+            const f = FILTERS.find(x => x.key === statusFilter) || FILTERS[0];
+            const counts = {};
+            preMap.filter(q => f.test(viewState(q))).forEach(q => { counts[questMapKey(q)] = (counts[questMapKey(q)] || 0) + 1; });
+            const maps = [...new Set(QUESTS.map(q => q.map).filter(Boolean))].sort(byMap);
+            const btn = (key, label) => `<button class="cat-btn ${mapFilter === key ? 'active' : ''}" onclick="setMap(${esc(JSON.stringify(key))})">${label} <span class="n">${counts[key] || 0}</span></button>`;
+            const total = Object.values(counts).reduce((a, b) => a + b, 0);
+            document.getElementById('mapFilters').innerHTML =
+                `<span class="label-dim" style="margin-right:2px;">🗺️ Mapa</span>` +
+                `<button class="cat-btn ${mapFilter === 'all' ? 'active' : ''}" onclick="setMap('all')">WSZYSTKIE <span class="n">${total}</span></button>` +
+                maps.map(m => btn(m, esc(m).toUpperCase())).join('') +
+                btn(ANY_MAP, 'BEZ KONKRETNEJ MAPY');
         }
 
         function renderFilters(base) {
@@ -345,8 +370,10 @@
 
         function render() {
             const s = document.getElementById('search').value.trim().toLowerCase();
-            const base = QUESTS.filter(q => matchesBase(q) && (traderFilter === 'all' || q.trader === traderFilter) && matchesSearch(q, s));
+            const preMap = QUESTS.filter(q => matchesBase(q) && (traderFilter === 'all' || q.trader === traderFilter) && matchesSearch(q, s));
+            const base = preMap.filter(matchesMap);
             renderFilters(base);
+            renderMapFilters(preMap);
             renderSummary();
             document.getElementById('noData').style.display = QUESTS.length ? 'none' : '';
 
@@ -378,6 +405,7 @@
         function setFaction(f) { faction = f; save('tarkov_q_faction', f); render(); }
         function setMyLevel(v) { const n = parseInt(v); myLevel = isNaN(n) ? null : n; save('tarkov_q_level', myLevel); render(); }
         function setTrader(t) { traderFilter = t; save('tarkov_q_trader', t); render(); }
+        function setMap(m) { mapFilter = m; save('tarkov_q_map', m); render(); }
 
         // ręczna zmiana stanu: najpierw UI, potem serwer (przy błędzie przeładowanie)
         async function setStatus(id, status) {
