@@ -137,6 +137,8 @@
         .b-kappa { background: var(--gold-soft); color: var(--gold); border-color: rgba(224,194,90,0.4); }
         .b-lvl { background: #222; color: #aaa; border-color: #333; }
         .b-map { background: #1b1b1b; color: #999; border-color: #2e2e2e; }
+        .b-map.b-anymap { color: #777; font-style: italic; }
+        .b-map.b-map-hit { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
         .b-faction { background: var(--danger-soft); color: #ff8a80; border-color: rgba(224,82,82,0.3); }
         .b-fir { background: var(--warn); color: #000; }
         .st-chip { padding: 3px 9px; font-size: 0.66em; font-weight: 800; border-radius: 999px; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -253,8 +255,16 @@
         const MAP_ORDER = ['Ground Zero', 'Customs', 'Factory', 'Woods', 'Interchange', 'Shoreline', 'Reserve', 'Lighthouse', 'Streets of Tarkov', 'The Lab', 'The Labyrinth'];
         const mapRank = m => { const i = MAP_ORDER.findIndex(x => x.toLowerCase() === String(m).toLowerCase()); return i < 0 ? 100 : i; };
         const byMap = (a, b) => (mapRank(a) - mapRank(b)) || a.localeCompare(b);
-        const questMapKey = q => q.map || ANY_MAP;
-        function matchesMap(q) { return mapFilter === 'all' || questMapKey(q) === mapFilter; }
+        // mapy questa = mapy wszystkich jego celów; pusta lista = dowolna mapa (np. "znajdź w raidzie").
+        // Quest z dowolnej mapy pokazujemy pod KAŻDĄ mapą, bo da się go zrobić także tam.
+        const questMaps = q => Array.isArray(q.maps) ? q.maps : (q.map ? [q.map] : []);
+        const isAnyMap = q => questMaps(q).length === 0;
+        function questOnMap(q, m) {
+            if (m === 'all') return true;
+            if (m === ANY_MAP) return isAnyMap(q);
+            return isAnyMap(q) || questMaps(q).includes(m);
+        }
+        function matchesMap(q) { return questOnMap(q, mapFilter); }
 
         // --- STATUS API tarkov.dev ---
         let apiStatusData = null;
@@ -303,16 +313,15 @@
         // liczniki przy mapach: ile questów na danej mapie pasuje do pozostałych filtrów (z wybranym stanem)
         function renderMapFilters(preMap) {
             const f = FILTERS.find(x => x.key === statusFilter) || FILTERS[0];
-            const counts = {};
-            preMap.filter(q => f.test(viewState(q))).forEach(q => { counts[questMapKey(q)] = (counts[questMapKey(q)] || 0) + 1; });
-            const maps = [...new Set(QUESTS.map(q => q.map).filter(Boolean))].sort(byMap);
-            const btn = (key, label) => `<button class="cat-btn ${mapFilter === key ? 'active' : ''}" onclick="setMap(${esc(JSON.stringify(key))})">${label} <span class="n">${counts[key] || 0}</span></button>`;
-            const total = Object.values(counts).reduce((a, b) => a + b, 0);
+            const inState = preMap.filter(q => f.test(viewState(q)));
+            const maps = [...new Set(QUESTS.flatMap(questMaps))].sort(byMap);
+            const count = key => inState.filter(q => questOnMap(q, key)).length;
+            const btn = (key, label, title) => `<button class="cat-btn ${mapFilter === key ? 'active' : ''}" title="${title || ''}" onclick="setMap(${esc(JSON.stringify(key))})">${label} <span class="n">${count(key)}</span></button>`;
             document.getElementById('mapFilters').innerHTML =
                 `<span class="label-dim" style="margin-right:2px;">🗺️ Mapa</span>` +
-                `<button class="cat-btn ${mapFilter === 'all' ? 'active' : ''}" onclick="setMap('all')">WSZYSTKIE <span class="n">${total}</span></button>` +
-                maps.map(m => btn(m, esc(m).toUpperCase())).join('') +
-                btn(ANY_MAP, 'BEZ KONKRETNEJ MAPY');
+                btn('all', 'WSZYSTKIE') +
+                maps.map(m => btn(m, esc(m).toUpperCase(), 'Questy na tej mapie + questy do zrobienia na dowolnej mapie')).join('') +
+                btn(ANY_MAP, 'DOWOLNA MAPA', 'Tylko questy bez konkretnej mapy (np. znajdź w raidzie, oddaj przedmioty)');
         }
 
         function renderFilters(base) {
@@ -370,7 +379,10 @@
                 <div class="q-badges">
                     ${q.kappa ? '<span class="badge b-kappa">⭐ KAPPA</span>' : ''}
                     ${q.minLevel ? `<span class="badge b-lvl">LVL ${q.minLevel}</span>` : ''}
-                    ${q.map ? `<span class="badge b-map">🗺️ ${esc(q.map)}</span>` : ''}
+                    ${isAnyMap(q)
+                        ? '<span class="badge b-map b-anymap" title="Da się zrobić na dowolnej mapie">🗺️ Dowolna mapa</span>'
+                        : questMaps(q).slice().sort(byMap).slice(0, 3).map(m => `<span class="badge b-map ${m === mapFilter ? 'b-map-hit' : ''}">🗺️ ${esc(m)}</span>`).join('') +
+                          (questMaps(q).length > 3 ? `<span class="badge b-map" title="${esc(questMaps(q).slice().sort(byMap).slice(3).join(', '))}">+${questMaps(q).length - 3}</span>` : '')}
                     ${q.faction !== 'Any' ? `<span class="badge b-faction">${esc(q.faction)}</span>` : ''}
                 </div>
                 ${unmet.length ? `<div class="q-reqs">Najpierw ukończ: <b>${unmet.map(esc).join(', ')}</b></div>` : ''}

@@ -31,6 +31,18 @@ const MAP_CANONICALIZE = {
 // "dostępne wszędzie" zamiast wypisywać każdą z osobna
 const STANDARD_MAPS = ['Customs', 'Factory', 'Woods', 'Lighthouse', 'Shoreline', 'Reserve', 'Interchange', 'Streets of Tarkov', 'Ground Zero', 'The Lab'];
 
+// slug mapy z tarkov.dev -> nazwa wyświetlana (warianty scalone, tutorial pomijany)
+function canonicalMapName(normalizedName, name) {
+    if (normalizedName && /tutorial/i.test(normalizedName)) return '';
+    return MAP_CANONICALIZE[normalizedName] || name || humanizeSlug(normalizedName) || '';
+}
+// lista map questa: unikalne; quest na (prawie) wszystkich mapach = [] czyli "dowolna mapa"
+function questMapList(names) {
+    const list = [...new Set((names || []).filter(Boolean))];
+    const standardCovered = STANDARD_MAPS.filter(m => list.includes(m)).length;
+    return standardCovered >= 8 ? [] : list;
+}
+
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -142,6 +154,7 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN give_items TEXT DEFAULT '[]'",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN image TEXT DEFAULT ''",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN objectives TEXT DEFAULT '[]'",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''",
@@ -305,7 +318,7 @@ async function fetchTasksFromJsonApi() {
     const objectiveText = id => (tasksText && typeof tasksText[id] === 'string') ? tasksText[id].trim() : '';
     const mapNameById = {};
     Object.values((mapsData && mapsData.maps) || {}).forEach(m => {
-        if (m && m.id) mapNameById[m.id] = MAP_CANONICALIZE[m.normalizedName] || humanizeSlug(m.normalizedName) || '';
+        if (m && m.id) mapNameById[m.id] = canonicalMapName(m.normalizedName, '');
     });
     const rawList = Object.values(tasksData.tasks || {});
     if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
@@ -352,6 +365,8 @@ async function fetchTasksFromJsonApi() {
                     wikiLink: t.wikiLink || '',
                     taskImageLink: t.taskImageLink || '',
                     objectiveTexts: (t.objectives || []).map(o => ({ text: objectiveText(o.id), optional: !!o.optional })).filter(o => o.text),
+                    // mapy questa = mapa główna + mapy wszystkich celów (wiele questów dzieje się na kilku mapach)
+                    allMaps: [mapNameById[t.map], ...(t.objectives || []).flatMap(o => (o.maps || []).map(id => mapNameById[id]))],
                     objectives,
                     taskRequirements: (t.taskRequirements || []).map(r => ({ task: { id: r.task, name: taskNameById[r.task] || '?' } }))
                 };
@@ -563,8 +578,8 @@ async function syncKappaWithAPI() {
     const query = `
     {
         tasks(lang: en) {
-            id, name, kappaRequired, minPlayerLevel, factionName, trader { name imageLink }, map { name }, wikiLink, taskImageLink,
-            objectives { id type description ... on TaskObjectiveItem { item { name iconLink } items { id } count foundInRaid } },
+            id, name, kappaRequired, minPlayerLevel, factionName, trader { name imageLink }, map { name normalizedName }, wikiLink, taskImageLink,
+            objectives { id type description maps { name normalizedName } ... on TaskObjectiveItem { item { name iconLink } items { id } count foundInRaid } },
             taskRequirements { task { id name } }
         }
     }`;
@@ -591,15 +606,16 @@ async function syncKappaWithAPI() {
             // zapasowe źródło (json.tarkov.dev) gubi teraz wymagania/poziomy wielu questów - pustymi
             // danymi nie nadpisujemy wcześniej zapisanych pełnych (stąd CASE przy req_ids/min_level/map)
             const stmt = db.prepare(`INSERT INTO tarkov_tasks_cache
-                (id, name, trader, min_level, map, kappa, wiki, trader_image, faction, req_ids, give_items, image, objectives)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, name, trader, min_level, map, kappa, wiki, trader_image, faction, req_ids, give_items, image, objectives, maps)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     name = excluded.name, trader = excluded.trader, kappa = excluded.kappa, wiki = excluded.wiki,
                     trader_image = excluded.trader_image, faction = excluded.faction, give_items = excluded.give_items, image = excluded.image,
                     min_level = CASE WHEN excluded.min_level = 0 THEN tarkov_tasks_cache.min_level ELSE excluded.min_level END,
                     map = CASE WHEN excluded.map = '' THEN tarkov_tasks_cache.map ELSE excluded.map END,
                     req_ids = CASE WHEN excluded.req_ids = '[]' THEN tarkov_tasks_cache.req_ids ELSE excluded.req_ids END,
-                    objectives = CASE WHEN excluded.objectives = '[]' THEN tarkov_tasks_cache.objectives ELSE excluded.objectives END`);
+                    objectives = CASE WHEN excluded.objectives = '[]' THEN tarkov_tasks_cache.objectives ELSE excluded.objectives END,
+                    maps = excluded.maps`);
             allTasks.forEach(t => {
                 // przedmioty do ODDANIA (giveItem); przy wielu zamiennikach trzymamy max 30 id
                 const giveItems = (t.objectives || [])
@@ -610,7 +626,12 @@ async function syncKappaWithAPI() {
                     t.kappaRequired ? 1 : 0, t.wikiLink || '', t.trader ? (t.trader.imageLink || '') : '', t.factionName || 'Any',
                     JSON.stringify(reqIds), JSON.stringify(giveItems), t.taskImageLink || '',
                     // opisy celów: z JSON (objectiveTexts) albo z GraphQL (description w objectives)
-                    JSON.stringify(t.objectiveTexts || (t.objectives || []).filter(o => o && o.description).map(o => ({ text: o.description, optional: !!o.optional }))));
+                    JSON.stringify(t.objectiveTexts || (t.objectives || []).filter(o => o && o.description).map(o => ({ text: o.description, optional: !!o.optional }))),
+                    // mapy: z JSON (allMaps) albo z GraphQL (map + objectives.maps); [] = dowolna mapa
+                    JSON.stringify(questMapList(t.allMaps || [
+                        t.map ? canonicalMapName(t.map.normalizedName, t.map.name) : '',
+                        ...(t.objectives || []).flatMap(o => (o && o.maps ? o.maps : []).map(m => m ? canonicalMapName(m.normalizedName, m.name) : ''))
+                    ])));
             });
             // questy, których tarkov.dev już nie podaje (usunięte z gry / stare id) - inaczej wisiałyby na stronie Questy
             if (allTasks.length > 100) db.run(`DELETE FROM tarkov_tasks_cache WHERE id NOT IN (${allTasks.map(() => '?').join(',')})`, allTasks.map(t => t.id));
@@ -1062,7 +1083,7 @@ app.get('/quests', async (req, res) => {
             const st = statusById[t.id];
             return {
                 id: t.id, name: t.name, trader: t.trader, traderImage: t.trader_image || '', minLevel,
-                map: t.map || '', wiki: t.wiki || '', faction: t.faction || 'Any', image: t.image || '',
+                map: t.map || '', maps: parseJson(t.maps, []), wiki: t.wiki || '', faction: t.faction || 'Any', image: t.image || '',
                 kappa: !!t.kappa || kappaIds.has(t.id) || kappaNames.has(t.name),
                 reqIds, objectives, status: st ? st.status : 'todo', statusAt: st ? st.at : null, source: st ? st.source : null,
                 give: give.map(g => ({
