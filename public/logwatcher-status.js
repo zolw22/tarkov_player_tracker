@@ -65,8 +65,32 @@
         }
     }
 
+    // Zmiana stanu questów (nowe z logów albo z innej karty/urządzenia): wysyłamy zdarzenie
+    // "tracker:quests-changed". Strona, która umie się odświeżyć sama (Questy), woła preventDefault();
+    // na stronie Kappa (renderowanej po stronie serwera) pokazujemy dymek z przyciskiem "Odśwież".
+    let lastStamp = null;
+    function onStamp(st) {
+        if (!st || typeof st.questStamp !== 'string') return;
+        const prev = lastStamp;
+        lastStamp = st.questStamp;
+        if (prev === null || prev === st.questStamp) return;
+        const ev = new CustomEvent('tracker:quests-changed', { detail: st, cancelable: true });
+        const handled = !window.dispatchEvent(ev);
+        if (!handled && location.pathname.startsWith('/kappa')) showRefreshToast(st);
+    }
+    function showRefreshToast(st) {
+        if (document.getElementById('lw-toast')) return;
+        const t = document.createElement('div');
+        t.id = 'lw-toast';
+        t.style.cssText = 'position:fixed;right:16px;bottom:56px;z-index:3000;background:#141414;border:1px solid rgba(76,175,80,0.5);color:#ddd;padding:12px 14px;border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,0.5);font-size:0.9em;display:flex;gap:12px;align-items:center;max-width:calc(100vw - 32px);font-family:inherit;';
+        t.innerHTML = `<span>📜 Skrypt logów zmienił stan questów${st.lastQuest ? ` (ostatnio: <b>${esc(st.lastQuest.name)}</b>)` : ''}.</span>
+            <button style="background:#4caf50;color:#000;border:none;border-radius:999px;padding:6px 14px;font-weight:800;cursor:pointer;font-family:inherit;">Odśwież</button>`;
+        t.querySelector('button').addEventListener('click', () => location.reload());
+        document.body.appendChild(t);
+    }
+
     async function poll() {
-        try { render(await (await fetch('/api/logwatcher/status')).json()); }
+        try { const st = await (await fetch('/api/logwatcher/status')).json(); render(st); onStamp(st); }
         catch (e) { render(null); }
     }
 

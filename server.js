@@ -1087,11 +1087,20 @@ app.post('/api/quests/:id/status', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// aktualne stany questów - strona Questy dociąga je sama, gdy skrypt logów coś zgłosi
+app.get('/api/quests/status', async (req, res) => {
+    try { res.json(await dbAll("SELECT quest_id AS id, status, at, source FROM quest_status")); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/logwatcher/status', async (req, res) => {
     try {
         const last = await dbGet("SELECT name, completed_at FROM quest_completions WHERE name <> '' ORDER BY completed_at DESC LIMIT 1");
         const count = await dbGet("SELECT count(*) AS c FROM quest_completions");
+        // "odcisk" stanu questów - zmienia się przy każdym nowym starcie/ukończeniu/zmianie ręcznej
+        const stamp = await dbGet("SELECT count(*) AS c, COALESCE(max(at), 0) AS m, COALESCE(sum(length(status)), 0) AS s FROM quest_status");
         res.json({
+            questStamp: stamp ? `${stamp.c}:${stamp.m}:${stamp.s}` : '',
             connected: !!logwatcher.lastSeen && (Date.now() - logwatcher.lastSeen) < LOGWATCHER_TIMEOUT,
             lastSeen: logwatcher.lastSeen, version: logwatcher.version,
             lastQuest: last ? { name: last.name, at: last.completed_at } : null,

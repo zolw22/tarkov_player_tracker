@@ -442,6 +442,22 @@
             } catch (e) { console.error(e); Object.assign(q, prev); render(); alert('Nie udało się zapisać zmiany.'); }
         }
 
+        // skrypt logów (albo inna karta) zmienił stany questów - dociągamy je bez przeładowania strony
+        async function refreshStatuses() {
+            try {
+                const rows = await (await fetch('/api/quests/status')).json();
+                const byQ = {}; rows.forEach(r => { byQ[r.id] = r; });
+                QUESTS.forEach(q => {
+                    const r = byQ[q.id];
+                    q.status = r ? r.status : 'todo';
+                    q.statusAt = r ? r.at : null;
+                    q.source = r ? r.source : null;
+                });
+                render();
+            } catch (e) { console.error('Nie udało się odświeżyć stanów questów', e); }
+        }
+        window.addEventListener('tracker:quests-changed', (e) => { e.preventDefault(); refreshStatuses(); });
+
         if (myLevel !== null) document.getElementById('myLevel').value = myLevel;
         render();
     </script>
