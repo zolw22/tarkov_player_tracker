@@ -107,6 +107,30 @@
         }
         .lvl-input:focus { border-color: var(--accent); }
         .lvl-input::-webkit-outer-spin-button, .lvl-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .search-row { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
+        .search-wide { flex: 1; }
+        .toolbar .search-wide input {
+            width: 100%; border-radius: 999px; padding: 10px 40px 10px 36px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .toolbar .search-wide input:focus { box-shadow: 0 0 0 3px var(--accent-soft); }
+        .search-wide.active input { border-color: var(--accent); }
+        .search-clear {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: none;
+            background: #222; color: #aaa; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 0.75em;
+        }
+        .search-clear:hover { background: var(--danger); color: #fff; }
+        .search-wide.active .search-clear { display: block; }
+        .filter-count { font-size: 0.8em; color: #888; white-space: nowrap; }
+        .filter-count b { color: var(--accent); }
+
+        /* klucze */
+        .q-keys { display: flex; flex-direction: column; gap: 4px; }
+        .q-key { display: grid; grid-template-columns: 28px 1fr auto; gap: 8px; align-items: center; font-size: 0.8em; padding: 3px 5px; border-radius: 6px; background: rgba(224,194,90,0.07); border: 1px solid rgba(224,194,90,0.18); }
+        .q-key img { width: 28px; height: 28px; object-fit: contain; }
+        .q-key .nm { color: #e6d9a8; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .q-key .nm small { color: #8a805f; }
+        .q-key .mp { font-size: 0.85em; color: #8a805f; white-space: nowrap; }
         .label-dim { font-size: 0.72em; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
 
         /* --- SEKCJE TRADERÓW --- */
@@ -210,7 +234,6 @@
         <div class="toolbar">
             <div class="toolbar-row">
                 <div class="filters" id="statusFilters"></div>
-                <div class="field-search"><input type="text" id="search" placeholder="Szukaj questa lub przedmiotu..." oninput="render()"></div>
             </div>
             <div class="toolbar-row">
                 <div class="filters">
@@ -234,6 +257,13 @@
             </div>
             <div class="filters" id="traderFilters"></div>
             <div class="filters" id="mapFilters"></div>
+            <div class="search-row">
+                <div class="field-search search-wide">
+                    <input type="text" id="search" placeholder="Szukaj: quest, cel, przedmiot, klucz…" autocomplete="off" oninput="render()" onkeydown="if(event.key==='Escape'){this.value='';render();}">
+                    <button type="button" class="search-clear" title="Wyczyść" onclick="const i=document.getElementById('search'); i.value=''; render(); i.focus();">✕</button>
+                </div>
+                <span class="filter-count" id="searchCount"></span>
+            </div>
         </div>
 
         <div id="questList"></div>
@@ -318,6 +348,8 @@
             if (!s) return true;
             if (q.name.toLowerCase().includes(s)) return true;
             if (q.objectives.some(o => o.text.toLowerCase().includes(s))) return true;
+            if ((q.keys || []).some(k => k.items.some(i => (i.name || '').toLowerCase().includes(s) || (i.shortName || '').toLowerCase().includes(s)))) return true;
+            if (s === 'klucz' || s === 'key') return (q.keys || []).length > 0;
             return q.give.some(g => g.items.some(i => (i.name || '').toLowerCase().includes(s) || (i.shortName || '').toLowerCase().includes(s)));
         }
 
@@ -403,6 +435,15 @@
                     <summary>Co zrobić (${q.objectives.length})</summary>
                     <ol>${q.objectives.map(o => `<li class="${o.optional ? 'opt' : ''}">${esc(o.text)}</li>`).join('')}</ol>
                 </details>` : ''}
+                ${(q.keys || []).length ? `<div class="q-keys">${q.keys.map(k => {
+                    const first = k.items[0] || { name: '?', image: '' };
+                    const more = k.alternatives > 1 ? ` <small>lub ${k.alternatives - 1} ${k.alternatives - 1 === 1 ? 'inny' : 'innych'}</small>` : '';
+                    return `<div class="q-key" title="Potrzebny klucz${k.alternatives > 1 ? ' (wystarczy jeden z: ' + esc(k.items.map(i => i.name).join(', ')) + (k.alternatives > k.items.length ? '…' : '') + ')' : ''}">
+                        ${first.image ? `<img src="${esc(first.image)}" alt="">` : '<span>🔑</span>'}
+                        <span class="nm">🔑 ${esc(first.name)}${more}</span>
+                        <span class="mp">${esc(k.map || '')}</span>
+                    </div>`;
+                }).join('')}</div>` : ''}
                 ${items ? `<div class="q-items">${items}</div>` : ''}
                 <div class="q-foot"><span class="q-src">${src}</span><div class="q-seg">${seg}</div></div>
             </div>`;
@@ -419,6 +460,8 @@
 
             const f = FILTERS.find(x => x.key === statusFilter) || FILTERS[0];
             const list = base.filter(q => f.test(viewState(q)));
+            document.querySelector('.search-wide').classList.toggle('active', !!s);
+            document.getElementById('searchCount').innerHTML = s ? `Pasuje: <b>${list.length}</b>` : '';
             const groups = {};
             list.forEach(q => { (groups[q.trader] = groups[q.trader] || []).push(q); });
 
