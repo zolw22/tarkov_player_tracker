@@ -132,6 +132,8 @@
         .q-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
         .q-name { font-weight: 800; color: #e6e6e6; font-size: 1em; line-height: 1.25; text-decoration: none; }
         a.q-name:hover { text-decoration: underline; }
+        .q-trader { display: flex; align-items: center; gap: 6px; font-size: 0.72em; font-weight: 800; color: #999; text-transform: uppercase; letter-spacing: 0.5px; margin-top: -4px; }
+        .q-trader img { width: 18px; height: 18px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border-soft); }
         .q-badges { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
         .badge { display: inline-block; padding: 2px 8px; font-size: 0.68em; font-weight: 800; letter-spacing: 0.4px; border-radius: 999px; border: 1px solid transparent; line-height: 1.45; white-space: nowrap; }
         .b-kappa { background: var(--gold-soft); color: var(--gold); border-color: rgba(224,194,90,0.4); }
@@ -222,6 +224,13 @@
                         <button class="segmented-opt" data-f="BEAR" onclick="setFaction('BEAR')">BEAR</button>
                     </div>
                 </div>
+                <div class="filters">
+                    <span class="label-dim">Widok</span>
+                    <div class="segmented" id="groupSeg">
+                        <button class="segmented-opt" data-g="trader" onclick="setGroup('trader')" title="Osobna sekcja dla każdego tradera">☰ Wg traderów</button>
+                        <button class="segmented-opt" data-g="flat" onclick="setGroup('flat')" title="Wszystkie questy w jednej siatce, obok siebie">⊞ Wszystkie razem</button>
+                    </div>
+                </div>
             </div>
             <div class="filters" id="traderFilters"></div>
             <div class="filters" id="mapFilters"></div>
@@ -251,6 +260,8 @@
 
         // mapy: '' w danych = quest bez konkretnej mapy (dowolna / poza raidem)
         let mapFilter = load('tarkov_q_map', 'all');
+        // układ: 'trader' = sekcje per trader, 'flat' = jedna wspólna siatka (trader widoczny na karcie)
+        let groupBy = load('tarkov_q_group', 'trader');
         const ANY_MAP = '__any__';
         const MAP_ORDER = ['Ground Zero', 'Customs', 'Factory', 'Woods', 'Interchange', 'Shoreline', 'Reserve', 'Lighthouse', 'Streets of Tarkov', 'The Lab', 'The Labyrinth'];
         const mapRank = m => { const i = MAP_ORDER.findIndex(x => x.toLowerCase() === String(m).toLowerCase()); return i < 0 ? 100 : i; };
@@ -376,6 +387,7 @@
                     ${q.wiki ? `<a class="q-name" href="${esc(q.wiki)}" target="_blank" rel="noopener" title="Otwórz wiki">${esc(q.name)} ↗</a>` : `<span class="q-name">${esc(q.name)}</span>`}
                     <span class="st-chip ${chipCls}">${chipText}</span>
                 </div>
+                ${groupBy === 'flat' ? `<div class="q-trader">${q.traderImage ? `<img src="${esc(q.traderImage)}" alt="">` : ''}${esc(q.trader)}</div>` : ''}
                 <div class="q-badges">
                     ${q.kappa ? '<span class="badge b-kappa">⭐ KAPPA</span>' : ''}
                     ${q.minLevel ? `<span class="badge b-lvl">LVL ${q.minLevel}</span>` : ''}
@@ -410,6 +422,15 @@
             const groups = {};
             list.forEach(q => { (groups[q.trader] = groups[q.trader] || []).push(q); });
 
+            document.querySelectorAll('#groupSeg .segmented-opt').forEach(b => b.classList.toggle('active', b.dataset.g === groupBy));
+            if (groupBy === 'flat') {
+                // jedna siatka: najpierw wg stanu (w trakcie na górze), potem kolejność traderów i poziom
+                const qs = list.slice().sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || byTrader(a.trader, b.trader) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
+                document.getElementById('questList').innerHTML = qs.length
+                    ? `<div class="quest-grid">${qs.map(questCard).join('')}</div>`
+                    : (QUESTS.length ? '<div class="empty-state">Nic nie pasuje do filtrów.</div>' : '');
+                return;
+            }
             const html = Object.keys(groups).sort(byTrader).map(trader => {
                 const qs = groups[trader].sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
                 const all = QUESTS.filter(q => q.trader === trader && matchesBase(q));
@@ -437,6 +458,7 @@
         const openObj = new Set();
         function rememberObj(id, open) { if (open) openObj.add(id); else openObj.delete(id); }
         function setMap(m) { mapFilter = m; save('tarkov_q_map', m); render(); }
+        function setGroup(g) { groupBy = g; save('tarkov_q_group', g); render(); }
 
         // ręczna zmiana stanu: najpierw UI, potem serwer (przy błędzie przeładowanie)
         async function setStatus(id, status) {
