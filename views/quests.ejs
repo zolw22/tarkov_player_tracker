@@ -146,6 +146,17 @@
         .st-chip.failed { background: var(--danger-soft); color: #ff8a80; border: 1px solid rgba(224,82,82,0.4); }
         .st-chip.locked { background: #1d1d1d; color: #777; border: 1px solid #333; }
 
+        .q-obj { font-size: 0.8em; background: #161616; border: 1px solid #262626; border-radius: var(--radius-sm); }
+        .q-obj summary { cursor: pointer; padding: 6px 9px; color: #aaa; font-weight: 700; list-style: none; user-select: none; display: flex; align-items: center; gap: 6px; }
+        .q-obj summary::-webkit-details-marker { display: none; }
+        .q-obj summary::before { content: '▸'; color: #666; transition: transform 0.15s; display: inline-block; }
+        .q-obj[open] summary::before { transform: rotate(90deg); }
+        .q-obj summary:hover { color: #ddd; }
+        .q-obj ol { margin: 0; padding: 0 10px 8px 30px; color: #cfcfcf; line-height: 1.45; }
+        .q-obj li { margin: 3px 0; }
+        .q-obj li.opt { color: #888; }
+        .q-obj li.opt::after { content: ' (opcjonalne)'; color: #666; font-size: 0.9em; }
+        .quest.st-started .q-obj { border-color: rgba(90,169,230,0.3); }
         .q-reqs { font-size: 0.76em; color: #888; line-height: 1.4; }
         .q-reqs b { color: #ff8a80; font-weight: 600; }
         .q-items { display: flex; flex-direction: column; gap: 4px; }
@@ -285,6 +296,7 @@
         function matchesSearch(q, s) {
             if (!s) return true;
             if (q.name.toLowerCase().includes(s)) return true;
+            if (q.objectives.some(o => o.text.toLowerCase().includes(s))) return true;
             return q.give.some(g => g.items.some(i => (i.name || '').toLowerCase().includes(s) || (i.shortName || '').toLowerCase().includes(s)));
         }
 
@@ -363,6 +375,10 @@
                 </div>
                 ${unmet.length ? `<div class="q-reqs">Najpierw ukończ: <b>${unmet.map(esc).join(', ')}</b></div>` : ''}
                 ${lvlLock ? `<div class="q-reqs">Dostępny od poziomu <b>${q.minLevel}</b></div>` : ''}
+                ${q.objectives.length ? `<details class="q-obj" ${(vs === 'started' || vs === 'failed' || openObj.has(q.id)) ? 'open' : ''} ontoggle="rememberObj('${q.id}', this.open)">
+                    <summary>Co zrobić (${q.objectives.length})</summary>
+                    <ol>${q.objectives.map(o => `<li class="${o.optional ? 'opt' : ''}">${esc(o.text)}</li>`).join('')}</ol>
+                </details>` : ''}
                 ${items ? `<div class="q-items">${items}</div>` : ''}
                 <div class="q-foot"><span class="q-src">${src}</span><div class="q-seg">${seg}</div></div>
             </div>`;
@@ -405,6 +421,9 @@
         function setFaction(f) { faction = f; save('tarkov_q_faction', f); render(); }
         function setMyLevel(v) { const n = parseInt(v); myLevel = isNaN(n) ? null : n; save('tarkov_q_level', myLevel); render(); }
         function setTrader(t) { traderFilter = t; save('tarkov_q_trader', t); render(); }
+        // ręcznie rozwinięte listy celów zostają rozwinięte po przerysowaniu (zmiana filtra, statusu)
+        const openObj = new Set();
+        function rememberObj(id, open) { if (open) openObj.add(id); else openObj.delete(id); }
         function setMap(m) { mapFilter = m; save('tarkov_q_map', m); render(); }
 
         // ręczna zmiana stanu: najpierw UI, potem serwer (przy błędzie przeładowanie)
