@@ -96,6 +96,24 @@
         .goal-chip .x:hover { color: var(--danger); }
 
         .need-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 8px; }
+
+        /* FILTR PRZYPIĘTYCH (jak na stronie Loot) */
+        .filter-bar { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; flex-wrap: wrap; }
+        .filter-search { flex: 1; max-width: 520px; }
+        .filter-bar .filter-search input {
+            width: 100%; background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: 999px;
+            padding: 9px 38px 9px 36px; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .filter-bar .filter-search input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .filter-bar .filter-search.active input { border-color: var(--accent); }
+        .filter-clear {
+            position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: none;
+            background: #222; color: #aaa; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; font-size: 0.75em;
+        }
+        .filter-clear:hover { background: var(--danger); color: #fff; }
+        .filter-search.active .filter-clear { display: block; }
+        .filter-count { font-size: 0.8em; color: #888; white-space: nowrap; }
+        .filter-count b { color: var(--accent); }
         .need-row {
             display: grid; grid-template-columns: 44px 1fr auto; gap: 10px; align-items: center;
             background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px;
@@ -252,7 +270,15 @@
                 <div class="pinned-cost" id="pinnedCost"></div>
             </div>
             <div class="goal-chips" id="goalChips"></div>
+            <div class="filter-bar" id="needFilterBar" style="display:none;">
+                <div class="field-search filter-search">
+                    <input type="text" id="needFilter" placeholder="Filtruj: przedmiot, stacja, mapa…" autocomplete="off" oninput="setNeedFilter(this.value)" onkeydown="if(event.key==='Escape'){this.value='';setNeedFilter('');}">
+                    <button type="button" class="filter-clear" title="Wyczyść filtr" onclick="const i=document.getElementById('needFilter'); i.value=''; setNeedFilter(''); i.focus();">✕</button>
+                </div>
+                <span class="filter-count" id="needFilterCount"></span>
+            </div>
             <div class="need-grid" id="needGrid"></div>
+            <div class="empty-state" id="needNoMatch" style="display:none;">Nic z przypiętych nie pasuje do filtra.</div>
             <div class="empty-state" id="needEmpty">Nic nie przypięte. Rozwiń stację poniżej i kliknij „📌 Przypnij” przy poziomie, który chcesz zbudować.</div>
         </div>
 
@@ -320,6 +346,15 @@
             return { pinned, items: Object.values(agg) };
         }
 
+        // --- FILTR LISTY PRZYPIĘTYCH: każde słowo w nazwie, celach (np. "Lavatory 1") albo mapach ---
+        let needFilter = '';
+        function needMatchesFilter(i) {
+            if (!needFilter) return true;
+            const hay = [i.name, i.shortName || '', i.breakdown.map(b => b.label).join(' '), i.mapsInfo ? mapsText(i.mapsInfo) : ''].join(' ').toLowerCase();
+            return needFilter.split(/\s+/).every(w => hay.includes(w));
+        }
+        function setNeedFilter(v) { needFilter = String(v || '').trim().toLowerCase(); renderPinned(); }
+
         function renderPinned() {
             const { pinned, items } = aggregatePinned();
             const chips = document.getElementById('goalChips'), grid = document.getElementById('needGrid');
@@ -338,11 +373,14 @@
                 return a.name.localeCompare(b.name);
             });
 
-            let missingTotal = 0, cost = 0;
+            let missingTotal = 0, cost = 0, shown = 0;
             grid.innerHTML = items.map(i => {
                 const have = haveOf(i.itemId), done = have >= i.total, missing = Math.max(0, i.total - have);
                 if (!CURRENCY[i.name]) missingTotal += missing;
                 if (!CURRENCY[i.name] && !i.fir) cost += missing * (i.priceAvg || 0);
+                // filtr dotyczy tylko tego, co widać - sumy i koszt liczą wszystkie przypięte
+                if (!needMatchesFilter(i)) return '';
+                shown++;
                 const pct = Math.min(100, Math.round((Math.min(have, i.total) / i.total) * 100));
                 const isCurrency = !!CURRENCY[i.name];
                 return `
@@ -367,6 +405,10 @@
                 </div>`;
             }).join('');
 
+            document.getElementById('needFilterBar').style.display = items.length ? '' : 'none';
+            document.querySelector('#needFilterBar .filter-search').classList.toggle('active', !!needFilter);
+            document.getElementById('needFilterCount').innerHTML = needFilter ? `Pasuje: <b>${shown}</b> z ${items.length}` : '';
+            document.getElementById('needNoMatch').style.display = (needFilter && items.length && !shown) ? '' : 'none';
             document.getElementById('pinnedCost').innerHTML = items.length ? `<small>do dokupienia ≈</small>${fmtNum(cost)} ₽` : '';
             document.getElementById('sumPinned').textContent = pinned.length;
             document.getElementById('sumMissing').textContent = fmtNum(missingTotal);
