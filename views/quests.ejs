@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tarkov Tracker - Questy</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel: #1a1a1a;
+            --panel-2: #1e1e1e;
+            --border: #2c2c2c;
+            --border-soft: #383838;
+            --accent: #9a8c68;
+            --accent-soft: rgba(154,140,104,0.16);
+            --success: #4caf50;
+            --success-soft: rgba(76,175,80,0.14);
+            --danger: #e05252;
+            --danger-soft: rgba(224,82,82,0.14);
+            --warn: #ffb300;
+            --pin: #5aa9e6;
+            --pin-soft: rgba(90,169,230,0.14);
+            --gold: #e0c25a;
+            --gold-soft: rgba(224,194,90,0.14);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --shadow: 0 6px 18px rgba(0,0,0,0.35);
+        }
+
+        * { box-sizing: border-box; }
+        body { background-color: var(--bg); color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 10px; margin: 0; padding-bottom: 50px; }
+        input, button { font-family: inherit; font-size: 1em; }
+        a { color: inherit; }
+
+        /* GÓRNY PASEK (jak na stronie Hideout) */
+        .top-status-bar {
+            background: var(--panel); border-bottom: 1px solid var(--border); padding: 10px 20px;
+            display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;
+            position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 14px rgba(0,0,0,0.45); margin-bottom: 20px;
+            border-radius: 0 0 var(--radius) var(--radius);
+        }
+        .nav-bar { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+        .nav-link {
+            text-decoration: none; color: #888; padding: 8px 18px;
+            border: 1px solid var(--border-soft); border-radius: 999px; background: #161616;
+            font-weight: bold; text-transform: uppercase; font-size: 0.8em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .nav-link:hover { border-color: #555; color: #ccc; }
+        .nav-link.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+        .wipe-btn {
+            background: var(--danger-soft); color: #ff8a80; border: 1px solid rgba(224,82,82,0.35);
+            padding: 8px 16px; border-radius: 999px; font-weight: bold; text-transform: uppercase;
+            cursor: pointer; font-size: 0.75em; letter-spacing: 0.3px; transition: all 0.15s;
+        }
+        .wipe-btn:hover { background: var(--danger); color: #fff; }
+
+        .summary { display: flex; gap: 18px; align-items: center; }
+        .summary-stat { display: flex; flex-direction: column; align-items: flex-end; }
+        .summary-stat span { font-size: 0.65em; color: #777; text-transform: uppercase; letter-spacing: 0.5px; }
+        .summary-stat b { font-family: 'Consolas', monospace; font-size: 1.25em; color: #fff; }
+        .summary-stat b.gold { color: var(--gold); }
+        .summary-stat b.blue { color: #9fd0ff; }
+
+        .api-status-banner {
+            position: fixed; bottom: 0; left: 0; right: 0; z-index: 2000;
+            background: #2a1414; color: #ff8a80; border-top: 1px solid rgba(224,82,82,0.4);
+            padding: 8px 15px; text-align: center; font-size: 0.85em; font-weight: bold;
+            display: none; box-shadow: 0 -2px 10px rgba(0,0,0,0.5);
+        }
+        .api-status-banner.show { display: block; }
+
+        .page { max-width: 1400px; margin: 0 auto; }
+        .empty-state { text-align: center; color: #555; font-size: 0.85em; padding: 24px 10px; font-style: italic; }
+
+        /* --- FILTRY --- */
+        .toolbar {
+            background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+            padding: 12px; margin-bottom: 18px; display: flex; flex-direction: column; gap: 10px;
+        }
+        .toolbar-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+        .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+        .cat-btn {
+            background: #161616; border: 1px solid var(--border-soft); color: #888; padding: 7px 13px;
+            cursor: pointer; border-radius: 999px; font-weight: 700; font-size: 0.74em; letter-spacing: 0.4px; transition: all 0.15s;
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .cat-btn:hover:not(.active) { border-color: #555; color: #ccc; }
+        .cat-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+        .cat-btn.kappa.active { border-color: var(--gold); color: var(--gold); background: var(--gold-soft); }
+        .cat-btn .n { font-family: 'Consolas', monospace; color: #666; font-weight: 400; }
+        .cat-btn.active .n { color: inherit; opacity: 0.8; }
+        .trader-btn img { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; margin-left: -4px; }
+        .segmented { display: flex; background: #000; border: 1px solid #3a3a3a; border-radius: var(--radius-sm); overflow: hidden; }
+        .segmented-opt { padding: 7px 12px; font-size: 0.74em; font-weight: 700; color: #888; cursor: pointer; background: transparent; border: none; transition: all 0.15s; }
+        .segmented-opt:hover:not(.active) { background: #161616; color: #bbb; }
+        .segmented-opt.active { background: var(--accent-soft); color: var(--accent); }
+        .field-search { position: relative; }
+        .field-search input {
+            background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: var(--radius-sm);
+            padding: 8px 12px 8px 34px; width: 260px; outline: none; transition: border-color 0.15s;
+        }
+        .field-search input:focus { border-color: var(--accent); }
+        .field-search::before { content: "🔍"; position: absolute; left: 11px; top: 50%; transform: translateY(-50%); font-size: 0.85em; opacity: 0.6; pointer-events: none; }
+        .lvl-input {
+            width: 64px; background: #0f0f0f; color: #eee; border: 1px solid #3a3a3a; border-radius: var(--radius-sm);
+            padding: 6px 8px; text-align: center; font-weight: 700; outline: none; -moz-appearance: textfield;
+        }
+        .lvl-input:focus { border-color: var(--accent); }
+        .lvl-input::-webkit-outer-spin-button, .lvl-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+        .label-dim { font-size: 0.72em; color: #666; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; }
+
+        /* --- SEKCJE TRADERÓW --- */
+        .trader-section { margin-bottom: 22px; }
+        .trader-head { display: flex; align-items: center; gap: 10px; margin: 0 4px 10px; }
+        .trader-head img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border-soft); }
+        .trader-name { font-weight: 800; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
+        .trader-count { font-family: 'Consolas', monospace; color: #777; font-size: 0.85em; }
+        .trader-bar { flex: 1; height: 4px; background: #222; border-radius: 4px; overflow: hidden; max-width: 260px; }
+        .trader-bar i { display: block; height: 100%; background: var(--success); }
+
+        .quest-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; align-items: start; }
+        .quest {
+            background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px;
+            transition: all 0.18s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 8px;
+        }
+        .quest:hover { border-color: var(--border-soft); box-shadow: var(--shadow); }
+        .quest.st-started { border-color: rgba(90,169,230,0.45); background: linear-gradient(180deg, rgba(90,169,230,0.07), var(--panel-2) 45%); }
+        .quest.st-done { background: #131c13; border-color: rgba(76,175,80,0.3); }
+        .quest.st-done .q-name { color: #8fdc92; }
+        .quest.st-failed { border-color: rgba(224,82,82,0.4); }
+        .quest.locked { opacity: 0.62; }
+        .q-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+        .q-name { font-weight: 800; color: #e6e6e6; font-size: 1em; line-height: 1.25; text-decoration: none; }
+        a.q-name:hover { text-decoration: underline; }
+        .q-badges { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+        .badge { display: inline-block; padding: 2px 8px; font-size: 0.68em; font-weight: 800; letter-spacing: 0.4px; border-radius: 999px; border: 1px solid transparent; line-height: 1.45; white-space: nowrap; }
+        .b-kappa { background: var(--gold-soft); color: var(--gold); border-color: rgba(224,194,90,0.4); }
+        .b-lvl { background: #222; color: #aaa; border-color: #333; }
+        .b-map { background: #1b1b1b; color: #999; border-color: #2e2e2e; }
+        .b-faction { background: var(--danger-soft); color: #ff8a80; border-color: rgba(224,82,82,0.3); }
+        .b-fir { background: var(--warn); color: #000; }
+        .st-chip { padding: 3px 9px; font-size: 0.66em; font-weight: 800; border-radius: 999px; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.4px; }
+        .st-chip.todo { background: #1d1d1d; color: #888; border: 1px solid #333; }
+        .st-chip.started { background: var(--pin-soft); color: #9fd0ff; border: 1px solid rgba(90,169,230,0.4); }
+        .st-chip.done { background: var(--success); color: #000; }
+        .st-chip.failed { background: var(--danger-soft); color: #ff8a80; border: 1px solid rgba(224,82,82,0.4); }
+        .st-chip.locked { background: #1d1d1d; color: #777; border: 1px solid #333; }
+
+        .q-reqs { font-size: 0.76em; color: #888; line-height: 1.4; }
+        .q-reqs b { color: #ff8a80; font-weight: 600; }
+        .q-items { display: flex; flex-direction: column; gap: 4px; }
+        .q-item { display: grid; grid-template-columns: 28px 1fr auto; gap: 8px; align-items: center; font-size: 0.8em; padding: 3px 5px; border-radius: 6px; background: #161616; }
+        .q-item img { width: 28px; height: 28px; object-fit: contain; }
+        .q-item .nm { color: #ccc; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .q-item .nm small { color: #777; }
+        .q-item .ct { font-family: 'Consolas', monospace; color: var(--accent); font-weight: 700; white-space: nowrap; display: flex; gap: 5px; align-items: center; }
+
+        .q-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+        .q-src { font-size: 0.7em; color: #666; }
+        .q-seg { display: flex; background: #000; border: 1px solid #333; border-radius: var(--radius-sm); overflow: hidden; }
+        .q-seg button { padding: 5px 10px; font-size: 0.7em; font-weight: 700; color: #777; cursor: pointer; background: transparent; border: none; transition: all 0.15s; white-space: nowrap; }
+        .q-seg button:hover:not(.active) { background: #161616; color: #bbb; }
+        .q-seg button.active.todo { background: #2a2a2a; color: #ddd; }
+        .q-seg button.active.started { background: var(--pin-soft); color: #9fd0ff; }
+        .q-seg button.active.done { background: var(--success); color: #000; }
+
+        @media (max-width: 600px) {
+            .field-search input { width: 100%; }
+            .quest-grid { grid-template-columns: 1fr; }
+            .summary { width: 100%; justify-content: space-between; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="top-status-bar">
+        <div class="nav-bar" style="margin:0;">
+            <a href="/" class="nav-link">Loot</a>
+            <a href="/hideout" class="nav-link">Hideout</a>
+            <a href="/quests" class="nav-link active">Questy</a>
+            <a href="/kappa" class="nav-link">Kappa</a>
+            <form action="/wipe" method="POST" onsubmit="return confirm('⚠️ WIPE!\n\nTo zresetuje CAŁY postęp Kappa Trackera (odznaczy wszystkie itemy i questy), wyczyści listę lootu, postęp Hideoutu i stan questów.\n\nSkrypt logów na PC od tego momentu liczy tylko nowo ukończone questy.\n\nBaza zostanie najpierw zbackupowana do pliku z datą, więc da się to cofnąć ręcznie.\n\nKontynuować?')" style="margin:0;">
+                <button type="submit" class="wipe-btn" title="Reset postępu jak przy wipe'ie serwera">💀 Wipe</button>
+            </form>
+        </div>
+
+        <div class="summary">
+            <div class="summary-stat"><span>Ukończone</span><b id="sumDone">0 / 0</b></div>
+            <div class="summary-stat"><span>W trakcie</span><b id="sumStarted" class="blue">0</b></div>
+            <div class="summary-stat"><span>Kappa</span><b id="sumKappa" class="gold">0 / 0</b></div>
+        </div>
+    </div>
+
+    <div class="page">
+        <div class="toolbar">
+            <div class="toolbar-row">
+                <div class="filters" id="statusFilters"></div>
+                <div class="field-search"><input type="text" id="search" placeholder="Szukaj questa lub przedmiotu..." oninput="render()"></div>
+            </div>
+            <div class="toolbar-row">
+                <div class="filters">
+                    <button class="cat-btn kappa" id="kappaOnly" onclick="toggleKappaOnly()">⭐ TYLKO KAPPA</button>
+                    <span class="label-dim" style="margin-left:6px;">Mój LVL</span>
+                    <input type="number" id="myLevel" class="lvl-input" min="0" max="79" placeholder="—" oninput="setMyLevel(this.value)" title="Questy z wyższym wymaganym poziomem trafią do zablokowanych">
+                    <span class="label-dim" style="margin-left:6px;">Frakcja</span>
+                    <div class="segmented" id="factionSeg">
+                        <button class="segmented-opt" data-f="all" onclick="setFaction('all')">Obie</button>
+                        <button class="segmented-opt" data-f="USEC" onclick="setFaction('USEC')">USEC</button>
+                        <button class="segmented-opt" data-f="BEAR" onclick="setFaction('BEAR')">BEAR</button>
+                    </div>
+                </div>
+            </div>
+            <div class="filters" id="traderFilters"></div>
+        </div>
+
+        <div id="questList"></div>
+        <div class="empty-state" id="noData" style="display:none;">Brak danych o questach. Poczekaj na synchronizację z tarkov.dev (do kilku minut po starcie serwera).</div>
+    </div>
+
+    <div id="apiStatusBanner" class="api-status-banner"></div>
+
+    <script>
+        const QUESTS = <%- JSON.stringify(quests).replace(/</g, '\\u003c') %>;
+        const byId = {}; QUESTS.forEach(q => { byId[q.id] = q; });
+
+        const load = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } };
+        const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+        let statusFilter = load('tarkov_q_status', 'available');
+        let kappaOnly = load('tarkov_q_kappa', false);
+        let faction = load('tarkov_q_faction', 'all');
+        let traderFilter = load('tarkov_q_trader', 'all');
+        let myLevel = load('tarkov_q_level', null);
+        // kolejność traderów jak w grze; nieznani na końcu alfabetycznie
+        const TRADER_ORDER = ['Prapor', 'Therapist', 'Fence', 'Skier', 'Peacekeeper', 'Mechanic', 'Ragman', 'Jaeger', 'Ref', 'Lightkeeper', 'BTR Driver'];
+        const traderRank = t => { const i = TRADER_ORDER.findIndex(x => x.toLowerCase() === String(t).toLowerCase()); return i < 0 ? 100 : i; };
+        const byTrader = (a, b) => (traderRank(a) - traderRank(b)) || a.localeCompare(b);
+
+        // --- STATUS API tarkov.dev ---
+        let apiStatusData = null;
+        async function pollApiStatus() { try { apiStatusData = await (await fetch('/api/status')).json(); } catch (e) { apiStatusData = null; } }
+        function renderApiBanner() {
+            const banner = document.getElementById('apiStatusBanner');
+            if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
+            banner.textContent = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Lista questów pochodzi z zapasowego źródła.`;
+            banner.classList.add('show');
+        }
+        setInterval(renderApiBanner, 1000); setInterval(pollApiStatus, 5000); pollApiStatus().then(renderApiBanner);
+
+        const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        const fmtDate = ms => new Date(ms).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+        // zablokowany = nie zaczęty, a któryś z wymaganych wcześniej questów nie jest ukończony
+        function tooHigh(q) { return myLevel !== null && q.minLevel > myLevel; }
+        function unmetReqs(q) { return q.reqIds.filter(id => byId[id] && byId[id].status !== 'done').map(id => byId[id].name); }
+        function viewState(q) {
+            if (q.status === 'done') return 'done';
+            if (q.status === 'started') return 'started';
+            if (q.status === 'failed') return 'failed';
+            return (unmetReqs(q).length || tooHigh(q)) ? 'locked' : 'available';
+        }
+        const FILTERS = [
+            { key: 'available', label: 'DOSTĘPNE', test: s => s === 'available' },
+            { key: 'started', label: 'W TRAKCIE', test: s => s === 'started' || s === 'failed' },
+            { key: 'locked', label: 'ZABLOKOWANE', test: s => s === 'locked' },
+            { key: 'done', label: 'UKOŃCZONE', test: s => s === 'done' },
+            { key: 'all', label: 'WSZYSTKIE', test: () => true }
+        ];
+        const ORDER = { started: 0, failed: 1, available: 2, locked: 3, done: 4 };
+
+        function matchesBase(q) {
+            if (kappaOnly && !q.kappa) return false;
+            if (faction !== 'all' && q.faction !== 'Any' && q.faction !== faction) return false;
+            return true;
+        }
+        function matchesSearch(q, s) {
+            if (!s) return true;
+            if (q.name.toLowerCase().includes(s)) return true;
+            return q.give.some(g => g.items.some(i => (i.name || '').toLowerCase().includes(s) || (i.shortName || '').toLowerCase().includes(s)));
+        }
+
+        function renderFilters(base) {
+            const counts = {}; FILTERS.forEach(f => counts[f.key] = base.filter(q => f.test(viewState(q))).length);
+            document.getElementById('statusFilters').innerHTML = FILTERS.map(f =>
+                `<button class="cat-btn ${statusFilter === f.key ? 'active' : ''}" onclick="setStatusFilter('${f.key}')">${f.label} <span class="n">${counts[f.key]}</span></button>`).join('');
+
+            const traders = [];
+            QUESTS.forEach(q => { if (!traders.find(t => t.name === q.trader)) traders.push({ name: q.trader, image: q.traderImage }); });
+            traders.sort((a, b) => byTrader(a.name, b.name));
+            document.getElementById('traderFilters').innerHTML =
+                `<button class="cat-btn ${traderFilter === 'all' ? 'active' : ''}" onclick="setTrader('all')">WSZYSCY TRADERZY</button>` +
+                traders.map(t => `<button class="cat-btn trader-btn ${traderFilter === t.name ? 'active' : ''}" onclick="setTrader(${esc(JSON.stringify(t.name))})">${t.image ? `<img src="${esc(t.image)}" alt="">` : ''}${esc(t.name).toUpperCase()}</button>`).join('');
+
+            document.getElementById('kappaOnly').classList.toggle('active', kappaOnly);
+            document.querySelectorAll('#factionSeg .segmented-opt').forEach(b => b.classList.toggle('active', b.dataset.f === faction));
+        }
+
+        function renderSummary() {
+            const base = QUESTS.filter(q => faction === 'all' || q.faction === 'Any' || q.faction === faction);
+            const done = base.filter(q => q.status === 'done').length;
+            const kappa = base.filter(q => q.kappa);
+            document.getElementById('sumDone').textContent = `${done} / ${base.length}`;
+            document.getElementById('sumStarted').textContent = base.filter(q => q.status === 'started').length;
+            document.getElementById('sumKappa').textContent = `${kappa.filter(q => q.status === 'done').length} / ${kappa.length}`;
+        }
+
+        function questCard(q) {
+            const vs = viewState(q);
+            const unmet = vs === 'locked' ? unmetReqs(q) : [];
+            const lvlLock = vs === 'locked' && tooHigh(q);
+            const chipText = { done: '✓ Ukończony', started: 'W trakcie', failed: 'Nieudany', locked: '🔒 Zablokowany', available: 'Dostępny' }[vs];
+            const chipCls = vs === 'available' ? 'todo' : vs;
+            const items = q.give.map(g => {
+                const first = g.items[0] || { name: '?', image: '' };
+                const more = g.alternatives > 1 ? ` <small>lub ${g.alternatives - 1} ${g.alternatives - 1 === 1 ? 'inny' : 'innych'}</small>` : '';
+                const title = g.items.map(i => i.name).join(', ') + (g.alternatives > g.items.length ? '…' : '');
+                return `<div class="q-item" title="${esc(title)}">
+                    ${first.image ? `<img src="${esc(first.image)}" alt="">` : '<span></span>'}
+                    <span class="nm">${esc(first.name)}${more}${g.optional ? ' <small>(opcjonalne)</small>' : ''}</span>
+                    <span class="ct">${g.fir ? '<span class="badge b-fir">FIR</span>' : ''}×${g.count}</span>
+                </div>`;
+            }).join('');
+            const src = q.statusAt ? `${q.source === 'log' ? '📜 z logów' : '✋ ręcznie'} · ${fmtDate(q.statusAt)}` : '';
+            const seg = ['todo', 'started', 'done'].map(s => {
+                const active = (s === 'todo' && (q.status === 'todo' || q.status === 'failed')) || q.status === s;
+                return `<button class="${s} ${active ? 'active' : ''}" onclick="setStatus('${q.id}', '${s}')">${{ todo: 'Do zrobienia', started: 'W trakcie', done: 'Ukończony' }[s]}</button>`;
+            }).join('');
+
+            return `<div class="quest st-${q.status} ${vs === 'locked' ? 'locked' : ''}">
+                <div class="q-head">
+                    ${q.wiki ? `<a class="q-name" href="${esc(q.wiki)}" target="_blank" rel="noopener" title="Otwórz wiki">${esc(q.name)} ↗</a>` : `<span class="q-name">${esc(q.name)}</span>`}
+                    <span class="st-chip ${chipCls}">${chipText}</span>
+                </div>
+                <div class="q-badges">
+                    ${q.kappa ? '<span class="badge b-kappa">⭐ KAPPA</span>' : ''}
+                    ${q.minLevel ? `<span class="badge b-lvl">LVL ${q.minLevel}</span>` : ''}
+                    ${q.map ? `<span class="badge b-map">🗺️ ${esc(q.map)}</span>` : ''}
+                    ${q.faction !== 'Any' ? `<span class="badge b-faction">${esc(q.faction)}</span>` : ''}
+                </div>
+                ${unmet.length ? `<div class="q-reqs">Najpierw ukończ: <b>${unmet.map(esc).join(', ')}</b></div>` : ''}
+                ${lvlLock ? `<div class="q-reqs">Dostępny od poziomu <b>${q.minLevel}</b></div>` : ''}
+                ${items ? `<div class="q-items">${items}</div>` : ''}
+                <div class="q-foot"><span class="q-src">${src}</span><div class="q-seg">${seg}</div></div>
+            </div>`;
+        }
+
+        function render() {
+            const s = document.getElementById('search').value.trim().toLowerCase();
+            const base = QUESTS.filter(q => matchesBase(q) && (traderFilter === 'all' || q.trader === traderFilter) && matchesSearch(q, s));
+            renderFilters(base);
+            renderSummary();
+            document.getElementById('noData').style.display = QUESTS.length ? 'none' : '';
+
+            const f = FILTERS.find(x => x.key === statusFilter) || FILTERS[0];
+            const list = base.filter(q => f.test(viewState(q)));
+            const groups = {};
+            list.forEach(q => { (groups[q.trader] = groups[q.trader] || []).push(q); });
+
+            const html = Object.keys(groups).sort(byTrader).map(trader => {
+                const qs = groups[trader].sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
+                const all = QUESTS.filter(q => q.trader === trader && matchesBase(q));
+                const done = all.filter(q => q.status === 'done').length;
+                const img = qs[0].traderImage;
+                return `<div class="trader-section">
+                    <div class="trader-head">
+                        ${img ? `<img src="${esc(img)}" alt="">` : ''}
+                        <span class="trader-name">${esc(trader)}</span>
+                        <span class="trader-count">${done} / ${all.length}</span>
+                        <span class="trader-bar"><i style="width:${all.length ? Math.round(done / all.length * 100) : 0}%"></i></span>
+                    </div>
+                    <div class="quest-grid">${qs.map(questCard).join('')}</div>
+                </div>`;
+            }).join('');
+            document.getElementById('questList').innerHTML = html || (QUESTS.length ? '<div class="empty-state">Nic nie pasuje do filtrów.</div>' : '');
+        }
+
+        function setStatusFilter(k) { statusFilter = k; save('tarkov_q_status', k); render(); }
+        function toggleKappaOnly() { kappaOnly = !kappaOnly; save('tarkov_q_kappa', kappaOnly); render(); }
+        function setFaction(f) { faction = f; save('tarkov_q_faction', f); render(); }
+        function setMyLevel(v) { const n = parseInt(v); myLevel = isNaN(n) ? null : n; save('tarkov_q_level', myLevel); render(); }
+        function setTrader(t) { traderFilter = t; save('tarkov_q_trader', t); render(); }
+
+        // ręczna zmiana stanu: najpierw UI, potem serwer (przy błędzie przeładowanie)
+        async function setStatus(id, status) {
+            const q = byId[id]; if (!q) return;
+            const prev = { status: q.status, statusAt: q.statusAt, source: q.source };
+            q.status = status;
+            q.statusAt = status === 'todo' ? null : Date.now();
+            q.source = status === 'todo' ? null : 'manual';
+            render();
+            try {
+                const res = await fetch(`/api/quests/${encodeURIComponent(id)}/status`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ status })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+            } catch (e) { console.error(e); Object.assign(q, prev); render(); alert('Nie udało się zapisać zmiany.'); }
+        }
+
+        if (myLevel !== null) document.getElementById('myLevel').value = myLevel;
+        render();
+    </script>
+    <script src="/logwatcher-status.js"></script>
+</body>
+</html>

@@ -94,6 +94,10 @@ function initializeDatabase() {
         db.run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)`);
         // ukończone questy zgłoszone przez skrypt czytający logi gry (id questu = id z tarkov.dev/BSG)
         db.run(`CREATE TABLE IF NOT EXISTS quest_completions (quest_id TEXT PRIMARY KEY, name TEXT, completed_at INTEGER, received_at INTEGER)`);
+        // stan KAŻDEGO questa (nie tylko Kappy): started / done / failed, z logów gry albo ustawiony ręcznie
+        db.run(`CREATE TABLE IF NOT EXISTS quest_status (quest_id TEXT PRIMARY KEY, status TEXT, at INTEGER, source TEXT)`);
+        // questy ukończone zanim istniała ta tabela (skrypt v1.0) - przenosimy jako "done"
+        db.run(`INSERT OR IGNORE INTO quest_status (quest_id, status, at, source) SELECT quest_id, 'done', completed_at, 'log' FROM quest_completions`);
         // wipe zrobiony wersją bez wipe_at (albo baza sprzed tej funkcji): datę bierzemy z nazwy
         // najnowszego backupu, który /wipe zawsze tworzy - inaczej skrypt logów odhaczyłby questy sprzed wipe'a
         db.get("SELECT value FROM app_settings WHERE key = 'wipe_at'", [], (err, row) => {
@@ -127,6 +131,16 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_avg INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN price_max INTEGER DEFAULT 0",
                     "ALTER TABLE kappa_tracker ADD COLUMN requirement_names TEXT DEFAULT '[]'",
+                    // pełne dane questów do strony Questy
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN min_level INTEGER DEFAULT 0",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN map TEXT DEFAULT ''",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN kappa INTEGER DEFAULT 0",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN wiki TEXT DEFAULT ''",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN trader_image TEXT DEFAULT ''",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN faction TEXT DEFAULT 'Any'",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN req_ids TEXT DEFAULT '[]'",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN give_items TEXT DEFAULT '[]'",
+                    "ALTER TABLE tarkov_tasks_cache ADD COLUMN image TEXT DEFAULT ''",
                     "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''",
@@ -282,7 +296,11 @@ async function fetchItemsFromJsonApi() {
 }
 
 async function fetchTasksFromJsonApi() {
-    const [tasksData, tradersData] = await Promise.all([fetchJsonApi('/regular/tasks'), fetchJsonApi('/regular/traders')]);
+    const [tasksData, tradersData, mapsData] = await Promise.all([fetchJsonApi('/regular/tasks'), fetchJsonApi('/regular/traders'), fetchJsonApi('/regular/maps').catch(() => ({}))]);
+    const mapNameById = {};
+    Object.values((mapsData && mapsData.maps) || {}).forEach(m => {
+        if (m && m.id) mapNameById[m.id] = MAP_CANONICALIZE[m.normalizedName] || humanizeSlug(m.normalizedName) || '';
+    });
     const rawList = Object.values(tasksData.tasks || {});
     if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
 
@@ -306,11 +324,16 @@ async function fetchTasksFromJsonApi() {
             (itemRows || []).forEach(r => { itemById[r.id] = { name: r.name, iconLink: r.image }; });
 
             resolve(list.map(t => {
+                // kształt jak w GraphQL: item (pierwszy, dla Kappy/Collectora) + items/count/foundInRaid/type
                 const objectives = (t.objectives || [])
                     .filter(o => (o.type === 'giveItem' || o.type === 'plantItem') && Array.isArray(o.items) && o.items.length > 0)
                     .map(o => {
                         const known = itemById[o.items[0]];
-                        return { item: known ? { name: known.name, iconLink: known.iconLink } : null };
+                        return {
+                            type: o.type, count: o.count || 1, foundInRaid: !!o.foundInRaid, optional: !!o.optional,
+                            items: o.items.map(id => ({ id })),
+                            item: known ? { name: known.name, iconLink: known.iconLink } : null
+                        };
                     });
                 return {
                     id: t.id,
@@ -319,10 +342,11 @@ async function fetchTasksFromJsonApi() {
                     minPlayerLevel: t.minPlayerLevel || 0,
                     factionName: t.factionName || 'Any',
                     trader: traderById[t.trader] || null,
-                    map: null,
+                    map: t.map && mapNameById[t.map] ? { name: mapNameById[t.map] } : null,
                     wikiLink: t.wikiLink || '',
+                    taskImageLink: t.taskImageLink || '',
                     objectives,
-                    taskRequirements: (t.taskRequirements || []).map(r => ({ task: { name: taskNameById[r.task] || '?' } }))
+                    taskRequirements: (t.taskRequirements || []).map(r => ({ task: { id: r.task, name: taskNameById[r.task] || '?' } }))
                 };
             }));
         });
@@ -532,15 +556,17 @@ async function syncKappaWithAPI() {
     const query = `
     {
         tasks(lang: en) {
-            id, name, kappaRequired, minPlayerLevel, factionName, trader { name imageLink }, map { name }, wikiLink,
-            objectives { ... on TaskObjectiveItem { item { name iconLink } } },
-            taskRequirements { task { name } }
+            id, name, kappaRequired, minPlayerLevel, factionName, trader { name imageLink }, map { name }, wikiLink, taskImageLink,
+            objectives { type ... on TaskObjectiveItem { item { name iconLink } items { id } count foundInRaid } },
+            taskRequirements { task { id name } }
         }
     }`;
     let allTasks;
     try {
         const response = await tarkovApiRequest({ query });
         allTasks = response.data.data ? response.data.data.tasks : null;
+        // GraphQL potrafi odpowiedzieć 200 z błędem w body (np. zmiana schematu) - wtedy też idziemy w JSON
+        if (!allTasks || allTasks.length === 0) throw new Error((response.data.errors && response.data.errors[0] && response.data.errors[0].message) || 'brak questów w odpowiedzi');
     } catch (graphqlErr) {
         console.warn("⚠️ [KAPPA] GraphQL zawiódł, próbuję json.tarkov.dev...");
         try {
@@ -555,8 +581,29 @@ async function syncKappaWithAPI() {
     try {
         db.serialize(() => {
             db.run("BEGIN TRANSACTION");
-            const stmt = db.prepare("INSERT OR REPLACE INTO tarkov_tasks_cache (id, name, trader) VALUES (?, ?, ?)");
-            allTasks.forEach(t => stmt.run(t.id, t.name, t.trader ? t.trader.name : 'Unknown'));
+            // zapasowe źródło (json.tarkov.dev) gubi teraz wymagania/poziomy wielu questów - pustymi
+            // danymi nie nadpisujemy wcześniej zapisanych pełnych (stąd CASE przy req_ids/min_level/map)
+            const stmt = db.prepare(`INSERT INTO tarkov_tasks_cache
+                (id, name, trader, min_level, map, kappa, wiki, trader_image, faction, req_ids, give_items, image)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name, trader = excluded.trader, kappa = excluded.kappa, wiki = excluded.wiki,
+                    trader_image = excluded.trader_image, faction = excluded.faction, give_items = excluded.give_items, image = excluded.image,
+                    min_level = CASE WHEN excluded.min_level = 0 THEN tarkov_tasks_cache.min_level ELSE excluded.min_level END,
+                    map = CASE WHEN excluded.map = '' THEN tarkov_tasks_cache.map ELSE excluded.map END,
+                    req_ids = CASE WHEN excluded.req_ids = '[]' THEN tarkov_tasks_cache.req_ids ELSE excluded.req_ids END`);
+            allTasks.forEach(t => {
+                // przedmioty do ODDANIA (giveItem); przy wielu zamiennikach trzymamy max 30 id
+                const giveItems = (t.objectives || [])
+                    .filter(o => o.type === 'giveItem' && Array.isArray(o.items) && o.items.length > 0)
+                    .map(o => ({ ids: o.items.filter(Boolean).slice(0, 30).map(i => i.id), alternatives: o.items.length, count: o.count || 1, fir: o.foundInRaid ? 1 : 0, optional: o.optional ? 1 : 0 }));
+                const reqIds = (t.taskRequirements || []).map(r => r.task && r.task.id).filter(Boolean);
+                stmt.run(t.id, t.name, t.trader ? t.trader.name : 'Unknown', t.minPlayerLevel || 0, t.map ? t.map.name : '',
+                    t.kappaRequired ? 1 : 0, t.wikiLink || '', t.trader ? (t.trader.imageLink || '') : '', t.factionName || 'Any',
+                    JSON.stringify(reqIds), JSON.stringify(giveItems), t.taskImageLink || '');
+            });
+            // questy, których tarkov.dev już nie podaje (usunięte z gry / stare id) - inaczej wisiałyby na stronie Questy
+            if (allTasks.length > 100) db.run(`DELETE FROM tarkov_tasks_cache WHERE id NOT IN (${allTasks.map(() => '?').join(',')})`, allTasks.map(t => t.id));
             stmt.finalize();
             db.run("COMMIT");
         });
@@ -652,8 +699,10 @@ app.get('/api/prices', (req, res) => {
 });
 
 app.post('/api/unnew/:id', (req, res) => { db.run("UPDATE kappa_tracker SET is_new = 0 WHERE id = ?", [req.params.id], () => res.sendStatus(200)); });
-app.post('/kappa/set_status/:id', (req, res) => { db.run("UPDATE kappa_tracker SET is_collected = ?, is_new = 0 WHERE id = ?", [parseInt(req.body.status), req.params.id], () => res.redirect('/kappa')); });
-app.post('/kappa/toggle/:id', (req, res) => { db.get("SELECT is_collected FROM kappa_tracker WHERE id = ?", [req.params.id], (err, row) => { if(row) { const next = (row.is_collected >= 1) ? 0 : 2; db.run("UPDATE kappa_tracker SET is_collected = ?, is_new = 0 WHERE id = ?", [next, req.params.id], () => res.redirect('/kappa')); } else res.redirect('/kappa'); }); });
+// po zmianie questa w Kappie ten sam stan trafia na stronę Questy (mirrorKappaRowToQuestStatus)
+const mirrorThenRedirect = (id, res) => mirrorKappaRowToQuestStatus(id).catch(e => console.error("❌ [KAPPA] mirror:", e.message)).finally(() => res.redirect('/kappa'));
+app.post('/kappa/set_status/:id', (req, res) => { db.run("UPDATE kappa_tracker SET is_collected = ?, is_new = 0 WHERE id = ?", [parseInt(req.body.status), req.params.id], () => mirrorThenRedirect(req.params.id, res)); });
+app.post('/kappa/toggle/:id', (req, res) => { db.get("SELECT is_collected FROM kappa_tracker WHERE id = ?", [req.params.id], (err, row) => { if(row) { const next = (row.is_collected >= 1) ? 0 : 2; db.run("UPDATE kappa_tracker SET is_collected = ?, is_new = 0 WHERE id = ?", [next, req.params.id], () => mirrorThenRedirect(req.params.id, res)); } else res.redirect('/kappa'); }); });
 app.post('/kappa/add', (req, res) => { const { name, image } = req.body; db.get("SELECT id FROM kappa_tracker WHERE name = ?", [name], (err, row) => { if (!row) db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements) VALUES (?, ?, 0, 1, 'item', 0, 'Custom', 'Ręcznie')`, [name, image || ''], () => res.redirect('/kappa')); else res.redirect('/kappa'); }); });
 app.post('/kappa/add_quest', (req, res) => { const { name, trader } = req.body; db.get("SELECT id FROM kappa_tracker WHERE name = ?", [name], (err, row) => { if (!row) db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, map, trader_image) VALUES (?, '', 0, 1, 'quest', 0, ?, 'Ręcznie dodane', 'Any', '')`, [name, trader || 'Custom'], () => res.redirect('/kappa')); else res.redirect('/kappa'); }); });
 app.post('/kappa/refresh', async (req, res) => { await syncKappaWithAPI(); res.redirect('/kappa'); });
@@ -882,35 +931,149 @@ app.post('/api/logwatcher/heartbeat', async (req, res) => {
     try { res.json({ ok: true, wipeAt: await getWipeAt() }); } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// body: { events: [{ questId, at }] } - at = ms (czas z serwera BSG zapisany w powiadomieniu)
+// --- STAN QUESTÓW (wszystkie questy, nie tylko Kappa) ---
+// Typy wiadomości w logach gry: 10 = quest rozpoczęty, 11 = nieudany, 12 = ukończony.
+const QUEST_EVENT_STATUS = { 10: 'started', 11: 'failed', 12: 'done' };
+const KAPPA_LEVEL = { todo: 0, started: 1, done: 2 }; // kappa_tracker.is_collected
+
+// wiersz questa w Kappie: po id questu, a gdy go nie ma (wpis sprzed tej wersji) - po nazwie
+async function findKappaQuestRow(questId, name) {
+    return dbGet("SELECT id, name, is_collected FROM kappa_tracker WHERE type = 'quest' AND (task_id = ? OR (? <> '' AND name = ?)) ORDER BY (task_id = ?) DESC LIMIT 1", [questId, name || '', name || '', questId]);
+}
+
+// Zdarzenie z logów: "ukończony" jest ostateczny (nie cofa go późniejszy start/porażka), poza tym
+// wygrywa nowsze zdarzenie. Zwraca { status, name, kappa } gdy coś się zmieniło, inaczej null.
+async function applyQuestLogEvent(questId, status, at) {
+    const existing = await dbGet("SELECT status, at FROM quest_status WHERE quest_id = ?", [questId]);
+    if (existing) {
+        if (existing.status === status) return null;
+        if (existing.status === 'done') return null;
+        if (status !== 'done' && at < existing.at) return null;
+    }
+    const task = await dbGet("SELECT name FROM tarkov_tasks_cache WHERE id = ?", [questId]);
+    const name = task ? task.name : '';
+    await dbRun("INSERT INTO quest_status (quest_id, status, at, source) VALUES (?, ?, ?, 'log') ON CONFLICT(quest_id) DO UPDATE SET status = excluded.status, at = excluded.at, source = 'log'", [questId, status, at]);
+    if (status === 'done') await dbRun("INSERT OR IGNORE INTO quest_completions (quest_id, name, completed_at, received_at) VALUES (?, ?, ?, ?)", [questId, name, at, Date.now()]);
+
+    let kappa = null;
+    const row = await findKappaQuestRow(questId, name);
+    if (row) {
+        if (status === 'done' && row.is_collected !== 2) { await dbRun("UPDATE kappa_tracker SET is_collected = 2, is_new = 0 WHERE id = ?", [row.id]); kappa = row.name; }
+        if (status === 'started' && row.is_collected === 0) await dbRun("UPDATE kappa_tracker SET is_collected = 1, is_new = 0 WHERE id = ?", [row.id]);
+    }
+    return { status, name, kappa };
+}
+
+// Ręczna zmiana stanu (strona Questy albo Kappa): todo / started / done.
+async function setQuestStatusManual(questId, status, { syncKappa = true } = {}) {
+    const task = await dbGet("SELECT name FROM tarkov_tasks_cache WHERE id = ?", [questId]);
+    const name = task ? task.name : '';
+    if (status === 'todo') {
+        await dbRun("DELETE FROM quest_status WHERE quest_id = ?", [questId]);
+    } else {
+        await dbRun("INSERT INTO quest_status (quest_id, status, at, source) VALUES (?, ?, ?, 'manual') ON CONFLICT(quest_id) DO UPDATE SET status = excluded.status, at = excluded.at, source = 'manual'", [questId, status, Date.now()]);
+    }
+    if (status === 'done') await dbRun("INSERT OR IGNORE INTO quest_completions (quest_id, name, completed_at, received_at) VALUES (?, ?, ?, ?)", [questId, name, Date.now(), Date.now()]);
+    else await dbRun("DELETE FROM quest_completions WHERE quest_id = ?", [questId]);
+    if (syncKappa) {
+        const row = await findKappaQuestRow(questId, name);
+        if (row) await dbRun("UPDATE kappa_tracker SET is_collected = ?, is_new = 0 WHERE id = ?", [KAPPA_LEVEL[status], row.id]);
+    }
+}
+
+// Zmiana na stronie Kappa -> ten sam stan na stronie Questy (dla wierszy-questów)
+async function mirrorKappaRowToQuestStatus(kappaRowId) {
+    const row = await dbGet("SELECT name, type, task_id, is_collected FROM kappa_tracker WHERE id = ?", [kappaRowId]);
+    if (!row || row.type !== 'quest') return;
+    let questId = row.task_id;
+    if (!questId) { const t = await dbGet("SELECT id FROM tarkov_tasks_cache WHERE name = ?", [row.name]); questId = t ? t.id : null; }
+    if (!questId) return;
+    const status = row.is_collected === 2 ? 'done' : row.is_collected === 1 ? 'started' : 'todo';
+    await setQuestStatusManual(questId, status, { syncKappa: false });
+}
+
+// body: { events: [{ questId, at, type }] } - at = ms (czas z serwera BSG), type 10/11/12 (brak = 12, skrypt v1.0)
 app.post('/api/logwatcher/quests', async (req, res) => {
     logwatcher.lastSeen = Date.now();
     try {
-        const events = Array.isArray(req.body && req.body.events) ? req.body.events : [];
         const wipeAt = await getWipeAt();
-        let accepted = 0, old = 0, unknown = 0;
+        const events = (Array.isArray(req.body && req.body.events) ? req.body.events : [])
+            .map(ev => ({ questId: String(ev.questId || ''), at: Number(ev.at) || 0, status: QUEST_EVENT_STATUS[ev.type === undefined ? 12 : Number(ev.type)] }))
+            .filter(ev => /^[0-9a-f]{24}$/i.test(ev.questId) && ev.status)
+            .sort((a, b) => a.at - b.at);
+        let accepted = 0, started = 0, old = 0;
         const kappaMarked = [];
         for (const ev of events) {
-            const questId = String(ev.questId || '');
-            const at = Number(ev.at) || 0;
-            if (!/^[0-9a-f]{24}$/i.test(questId)) continue;
-            if (at < wipeAt) { old++; continue; }
-            const exists = await dbGet("SELECT quest_id FROM quest_completions WHERE quest_id = ?", [questId]);
-            if (exists) continue;
-            const task = await dbGet("SELECT name FROM tarkov_tasks_cache WHERE id = ?", [questId]);
-            if (!task) unknown++; // np. dzienne/tygodniowe - nie ma ich w tarkov.dev
-            await dbRun("INSERT OR IGNORE INTO quest_completions (quest_id, name, completed_at, received_at) VALUES (?, ?, ?, ?)", [questId, task ? task.name : '', at, Date.now()]);
-            accepted++;
-            // odhacz w Kappie: po id questu, a gdy wiersz go jeszcze nie ma (sprzed tej wersji) - po nazwie
-            const name = task ? task.name : '';
-            const row = await dbGet("SELECT id, name, is_collected FROM kappa_tracker WHERE type = 'quest' AND (task_id = ? OR (? <> '' AND name = ?)) ORDER BY (task_id = ?) DESC LIMIT 1", [questId, name, name, questId]);
-            if (row && row.is_collected !== 2) {
-                await dbRun("UPDATE kappa_tracker SET is_collected = 2, is_new = 0 WHERE id = ?", [row.id]);
-                kappaMarked.push(row.name);
-            }
+            if (ev.at < wipeAt) { old++; continue; }
+            const r = await applyQuestLogEvent(ev.questId, ev.status, ev.at);
+            if (!r) continue;
+            if (r.status === 'done') accepted++;
+            if (r.status === 'started') started++;
+            if (r.kappa) kappaMarked.push(r.kappa);
         }
-        if (accepted > 0) console.log(`📜 [LOGI] Skrypt zgłosił ${accepted} nowych ukończonych questów (Kappa odhaczone: ${kappaMarked.length}${kappaMarked.length ? ' - ' + kappaMarked.slice(0, 5).join(', ') + (kappaMarked.length > 5 ? '...' : '') : ''}).`);
-        res.json({ ok: true, accepted, ignoredBeforeWipe: old, unknown, kappaMarked });
+        if (accepted > 0 || started > 0) console.log(`📜 [LOGI] Skrypt: ukończone ${accepted}, rozpoczęte ${started} (Kappa odhaczone: ${kappaMarked.length}${kappaMarked.length ? ' - ' + kappaMarked.slice(0, 5).join(', ') + (kappaMarked.length > 5 ? '...' : '') : ''}).`);
+        res.json({ ok: true, accepted, started, ignoredBeforeWipe: old, kappaMarked });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// --- STRONA QUESTY ---
+app.get('/quests', async (req, res) => {
+    try {
+        const [tasks, statuses, kappaRows] = await Promise.all([
+            dbAll("SELECT * FROM tarkov_tasks_cache ORDER BY trader, min_level, name"),
+            dbAll("SELECT * FROM quest_status"),
+            dbAll("SELECT name, task_id, min_level, requirement_names FROM kappa_tracker WHERE type = 'quest'")
+        ]);
+        // starsze, pełniejsze dane z listy Kappy (z czasów działającego GraphQL) jako uzupełnienie braków
+        const kappaByName = {}; kappaRows.forEach(k => { kappaByName[k.name] = k; });
+        const idByName = {}; tasks.forEach(t => { idByName[t.name] = t.id; });
+        const statusById = {}; statuses.forEach(s => { statusById[s.quest_id] = s; });
+        // tarkov.dev ma teraz niepełną flagę kappaRequired - za Kappę uznajemy też to, co jest na liście Kappy
+        const kappaIds = new Set(kappaRows.map(k => k.task_id).filter(Boolean));
+        const kappaNames = new Set(kappaRows.map(k => k.name));
+
+        const itemIds = new Set();
+        const parsed = tasks.map(t => {
+            const give = parseJson(t.give_items, []);
+            give.forEach(g => g.ids.slice(0, 3).forEach(id => itemIds.add(id)));
+            let reqIds = parseJson(t.req_ids, []);
+            let minLevel = t.min_level || 0;
+            const k = kappaByName[t.name];
+            if (k) {
+                if (reqIds.length === 0) reqIds = parseJson(k.requirement_names, []).map(n => idByName[n]).filter(Boolean);
+                if (!minLevel) minLevel = k.min_level || 0;
+            }
+            return { t, give, reqIds, minLevel };
+        });
+        const items = itemIds.size ? await dbAll(`SELECT id, name, shortName, image FROM tarkov_items_cache WHERE id IN (${[...itemIds].map(() => '?').join(',')})`, [...itemIds]) : [];
+        const itemById = {}; items.forEach(i => { itemById[i.id] = i; });
+
+        const quests = parsed.map(({ t, give, reqIds, minLevel }) => {
+            const st = statusById[t.id];
+            return {
+                id: t.id, name: t.name, trader: t.trader, traderImage: t.trader_image || '', minLevel,
+                map: t.map || '', wiki: t.wiki || '', faction: t.faction || 'Any', image: t.image || '',
+                kappa: !!t.kappa || kappaIds.has(t.id) || kappaNames.has(t.name),
+                reqIds, status: st ? st.status : 'todo', statusAt: st ? st.at : null, source: st ? st.source : null,
+                give: give.map(g => ({
+                    count: g.count, fir: g.fir, optional: g.optional, alternatives: g.alternatives,
+                    items: g.ids.slice(0, 3).map(id => itemById[id] ? { name: itemById[id].name, shortName: itemById[id].shortName, image: itemById[id].image } : { name: '?', shortName: '?', image: '' })
+                }))
+            };
+        });
+        res.render('quests', { quests });
+    } catch (e) {
+        console.error("❌ [QUESTY] Błąd renderowania:", e.message);
+        res.status(500).send('Błąd ładowania questów: ' + e.message);
+    }
+});
+
+app.post('/api/quests/:id/status', async (req, res) => {
+    const status = String(req.body.status || '');
+    if (!['todo', 'started', 'done'].includes(status)) return res.status(400).json({ error: 'invalid status' });
+    try {
+        await setQuestStatusManual(req.params.id, status);
+        res.json({ id: req.params.id, status });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -947,6 +1110,7 @@ app.post('/wipe', (req, res) => {
             db.run("DELETE FROM hideout_have");
             // od teraz skrypt logów liczy tylko questy ukończone po tym momencie
             db.run("DELETE FROM quest_completions");
+            db.run("DELETE FROM quest_status");
             db.run("INSERT INTO app_settings (key, value) VALUES ('wipe_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(Date.now())]);
             db.run("COMMIT", () => {
                 console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu + hideout + questy ze skryptu logów).");
