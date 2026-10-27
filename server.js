@@ -108,6 +108,8 @@ function initializeDatabase() {
         db.run(`CREATE TABLE IF NOT EXISTS quest_completions (quest_id TEXT PRIMARY KEY, name TEXT, completed_at INTEGER, received_at INTEGER)`);
         // stan KAŻDEGO questa (nie tylko Kappy): started / done / failed, z logów gry albo ustawiony ręcznie
         db.run(`CREATE TABLE IF NOT EXISTS quest_status (quest_id TEXT PRIMARY KEY, status TEXT, at INTEGER, source TEXT)`);
+        // ręczna kolejność kart na stronie Questy (przeciąganie); brak wpisu = kolejność domyślna
+        db.run(`CREATE TABLE IF NOT EXISTS quest_order (quest_id TEXT PRIMARY KEY, pos INTEGER)`);
         // questy ukończone zanim istniała ta tabela (skrypt v1.0) - przenosimy jako "done"
         db.run(`INSERT OR IGNORE INTO quest_status (quest_id, status, at, source) SELECT quest_id, 'done', completed_at, 'log' FROM quest_completions`);
         // wipe zrobiony wersją bez wipe_at (albo baza sprzed tej funkcji): datę bierzemy z nazwy
@@ -1059,11 +1061,13 @@ app.post('/api/logwatcher/quests', async (req, res) => {
 // --- STRONA QUESTY ---
 app.get('/quests', async (req, res) => {
     try {
-        const [tasks, statuses, kappaRows] = await Promise.all([
+        const [tasks, statuses, kappaRows, orderRows] = await Promise.all([
             dbAll("SELECT * FROM tarkov_tasks_cache ORDER BY trader, min_level, name"),
             dbAll("SELECT * FROM quest_status"),
-            dbAll("SELECT name, task_id, min_level, requirement_names FROM kappa_tracker WHERE type = 'quest'")
+            dbAll("SELECT name, task_id, min_level, requirement_names FROM kappa_tracker WHERE type = 'quest'"),
+            dbAll("SELECT quest_id, pos FROM quest_order")
         ]);
+        const posById = {}; orderRows.forEach(o => { posById[o.quest_id] = o.pos; });
         // starsze, pełniejsze dane z listy Kappy (z czasów działającego GraphQL) jako uzupełnienie braków
         const kappaByName = {}; kappaRows.forEach(k => { kappaByName[k.name] = k; });
         const idByName = {}; tasks.forEach(t => { idByName[t.name] = t.id; });
@@ -1098,6 +1102,7 @@ app.get('/quests', async (req, res) => {
                 map: t.map || '', maps: parseJson(t.maps, []), wiki: t.wiki || '', faction: t.faction || 'Any', image: t.image || '',
                 kappa: !!t.kappa || kappaIds.has(t.id) || kappaNames.has(t.name),
                 reqIds, objectives, status: st ? st.status : 'todo', statusAt: st ? st.at : null, source: st ? st.source : null,
+                pos: posById[t.id] !== undefined ? posById[t.id] : null,
                 keys: keys.map(k => ({ map: k.map, alternatives: k.ids.length, items: k.ids.slice(0, 3).map(itemInfo) })),
                 give: give.map(g => ({
                     count: g.count, fir: g.fir, optional: g.optional, alternatives: g.alternatives,
@@ -1110,6 +1115,25 @@ app.get('/quests', async (req, res) => {
         console.error("❌ [QUESTY] Błąd renderowania:", e.message);
         res.status(500).send('Błąd ładowania questów: ' + e.message);
     }
+});
+
+// ręczna kolejność po przeciągnięciu: "pairs" = "idQuesta:pozycja,idQuesta:pozycja,..."
+// (strona wylicza pozycje tak, żeby nie mieszać kolejności questów ukrytych przez filtry)
+app.post('/api/quests/order', async (req, res) => {
+    const pairs = String(req.body.pairs || '').split(',').map(p => p.split(':'))
+        .filter(p => p.length === 2 && /^[0-9a-f]{24}$/i.test(p[0]) && !isNaN(parseInt(p[1])))
+        .map(p => [p[0], parseInt(p[1])]);
+    if (pairs.length === 0) return res.status(400).json({ error: 'invalid order' });
+    try {
+        await dbRun("BEGIN TRANSACTION");
+        for (const [id, pos] of pairs) await dbRun("INSERT INTO quest_order (quest_id, pos) VALUES (?, ?) ON CONFLICT(quest_id) DO UPDATE SET pos = excluded.pos", [id, pos]);
+        await dbRun("COMMIT");
+        res.json({ ok: true, saved: pairs.length });
+    } catch (e) { await dbRun("ROLLBACK").catch(() => {}); res.status(500).json({ error: e.message }); }
+});
+app.post('/api/quests/order/reset', async (req, res) => {
+    try { await dbRun("DELETE FROM quest_order"); res.json({ ok: true }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/quests/:id/status', async (req, res) => {

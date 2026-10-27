@@ -148,6 +148,14 @@
             transition: all 0.18s ease; box-shadow: 0 1px 3px rgba(0,0,0,0.3); display: flex; flex-direction: column; gap: 8px;
         }
         .quest:hover { border-color: var(--border-soft); box-shadow: var(--shadow); }
+        .q-head .q-name { flex: 1; min-width: 0; }
+        .drag-handle {
+            cursor: grab; user-select: none; color: #666; font-size: 1.15em; line-height: 1; padding: 2px 5px; margin: -2px 0 0 -4px;
+            border-radius: 6px; border: 1px solid transparent; transition: color 0.15s, background 0.15s, border-color 0.15s;
+        }
+        .drag-handle:hover { color: #fff; background: #333; border-color: #555; }
+        .drag-handle:active { cursor: grabbing; }
+        .quest.dragging { opacity: 0.55; transform: scale(1.02); border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 10px 24px rgba(0,0,0,0.5); }
         .quest.st-started { border-color: rgba(90,169,230,0.45); background: linear-gradient(180deg, rgba(90,169,230,0.07), var(--panel-2) 45%); }
         .quest.st-done { background: #131c13; border-color: rgba(76,175,80,0.3); }
         .quest.st-done .q-name { color: #8fdc92; }
@@ -253,6 +261,7 @@
                         <button class="segmented-opt" data-g="trader" onclick="setGroup('trader')" title="Osobna sekcja dla każdego tradera">☰ Wg traderów</button>
                         <button class="segmented-opt" data-g="flat" onclick="setGroup('flat')" title="Wszystkie questy w jednej siatce, obok siebie">⊞ Wszystkie razem</button>
                     </div>
+                    <button class="cat-btn" id="resetOrderBtn" style="display:none;" onclick="resetOrder()" title="Usuń ręczną kolejność ustawioną przeciąganiem">↺ Domyślna kolejność</button>
                 </div>
             </div>
             <div class="filters" id="traderFilters"></div>
@@ -414,8 +423,9 @@
                 return `<button class="${s} ${active ? 'active' : ''}" onclick="setStatus('${q.id}', '${s}')">${{ todo: 'Do zrobienia', started: 'W trakcie', done: 'Ukończony' }[s]}</button>`;
             }).join('');
 
-            return `<div class="quest st-${q.status} ${vs === 'locked' ? 'locked' : ''}">
+            return `<div class="quest st-${q.status} ${vs === 'locked' ? 'locked' : ''}" data-id="${q.id}" data-state="${vs}">
                 <div class="q-head">
+                    <span class="drag-handle" draggable="true" title="Złap i przeciągnij, żeby zmienić kolejność">✥</span>
                     ${q.wiki ? `<a class="q-name" href="${esc(q.wiki)}" target="_blank" rel="noopener" title="Otwórz wiki">${esc(q.name)} ↗</a>` : `<span class="q-name">${esc(q.name)}</span>`}
                     <span class="st-chip ${chipCls}">${chipText}</span>
                 </div>
@@ -449,7 +459,19 @@
             </div>`;
         }
 
+        // ręczna kolejność: questy bez pozycji (np. świeżo rozpoczęte) na górze, potem wg zapisanej pozycji
+        function manualCmp(a, b) {
+            const pa = a.pos, pb = b.pos;
+            if (pa === null && pb === null) return 0;
+            if (pa === null) return -1;
+            if (pb === null) return 1;
+            return pa - pb;
+        }
+
         function render() {
+            // w trakcie przeciągania nie przerysowujemy (np. odświeżenie stanów ze skryptu) - zrobimy to po upuszczeniu
+            if (drag.card) { drag.pendingRender = true; return; }
+            document.getElementById('resetOrderBtn').style.display = QUESTS.some(q => q.pos !== null) ? '' : 'none';
             const s = document.getElementById('search').value.trim().toLowerCase();
             const preMap = QUESTS.filter(q => matchesBase(q) && (traderFilter === 'all' || q.trader === traderFilter) && matchesSearch(q, s));
             const base = preMap.filter(matchesMap);
@@ -468,14 +490,14 @@
             document.querySelectorAll('#groupSeg .segmented-opt').forEach(b => b.classList.toggle('active', b.dataset.g === groupBy));
             if (groupBy === 'flat') {
                 // jedna siatka: najpierw wg stanu (w trakcie na górze), potem kolejność traderów i poziom
-                const qs = list.slice().sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || byTrader(a.trader, b.trader) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
+                const qs = list.slice().sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || manualCmp(a, b) || byTrader(a.trader, b.trader) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
                 document.getElementById('questList').innerHTML = qs.length
                     ? `<div class="quest-grid">${qs.map(questCard).join('')}</div>`
                     : (QUESTS.length ? '<div class="empty-state">Nic nie pasuje do filtrów.</div>' : '');
                 return;
             }
             const html = Object.keys(groups).sort(byTrader).map(trader => {
-                const qs = groups[trader].sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
+                const qs = groups[trader].sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || manualCmp(a, b) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
                 const all = QUESTS.filter(q => q.trader === trader && matchesBase(q));
                 const done = all.filter(q => q.status === 'done').length;
                 const img = qs[0].traderImage;
@@ -517,6 +539,97 @@
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
             } catch (e) { console.error(e); Object.assign(q, prev); render(); alert('Nie udało się zapisać zmiany.'); }
+        }
+
+        // --- PRZECIĄGANIE KART (uchwyt ✥) ---
+        // Tylko w obrębie jednej siatki i między questami w tym samym stanie (w trakcie / dostępne / ...),
+        // bo stan i tak decyduje o kolejności grup. Algorytm "porządku czytania" jak na stronie Loot.
+        const drag = { card: null, grid: null, raf: null, dropped: false, pendingRender: false };
+        function findInsertTarget(grid, state, x, y) {
+            const cards = [...grid.querySelectorAll(`.quest[data-state="${state}"]:not(.dragging)`)];
+            for (const c of cards) {
+                const r = c.getBoundingClientRect();
+                if (y < r.top) return c;
+                if (y < r.bottom && x < r.left + r.width / 2) return c;
+            }
+            return null;
+        }
+        document.addEventListener('dragstart', (e) => {
+            const handle = e.target.closest && e.target.closest('.drag-handle');
+            if (!handle) return;
+            drag.card = handle.closest('.quest');
+            drag.grid = handle.closest('.quest-grid');
+            drag.dropped = false;
+            drag.card.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', drag.card.dataset.id);
+            e.dataTransfer.setDragImage(drag.card, 20, 20);
+        });
+        document.addEventListener('dragover', (e) => {
+            if (!drag.card || !e.target.closest || e.target.closest('.quest-grid') !== drag.grid) return;
+            e.preventDefault();
+            if (drag.raf) return;
+            const x = e.clientX, y = e.clientY;
+            drag.raf = requestAnimationFrame(() => {
+                drag.raf = null;
+                if (!drag.card) return;
+                const state = drag.card.dataset.state;
+                const target = findInsertTarget(drag.grid, state, x, y);
+                if (target === drag.card) return;
+                if (target) drag.grid.insertBefore(drag.card, target);
+                else {
+                    const same = [...drag.grid.querySelectorAll(`.quest[data-state="${state}"]`)];
+                    const last = same[same.length - 1];
+                    if (last && last !== drag.card) last.after(drag.card);
+                }
+            });
+        });
+        document.addEventListener('drop', (e) => {
+            if (!drag.card || !e.target.closest || e.target.closest('.quest-grid') !== drag.grid) return;
+            e.preventDefault();
+            drag.dropped = true;
+            saveOrder(drag.grid);
+        });
+        document.addEventListener('dragend', () => {
+            if (!drag.card) return;
+            drag.card.classList.remove('dragging');
+            const needRender = !drag.dropped || drag.pendingRender;
+            drag.card = null; drag.grid = null; drag.pendingRender = false;
+            if (drag.raf) { cancelAnimationFrame(drag.raf); drag.raf = null; }
+            if (needRender) render(); // anulowane przeciąganie wraca na miejsce
+        });
+
+        // Zapis kolejności siatki: karty dostają pozycje z puli pozycji, które już miały (+ nowe na końcu),
+        // więc questy ukryte przez filtry zachowują swoje miejsca względem siebie.
+        async function saveOrder(grid) {
+            const ids = [...grid.querySelectorAll('.quest')].map(c => c.dataset.id).filter(id => byId[id]);
+            const existing = ids.map(id => byId[id].pos).filter(p => p !== null);
+            let next = QUESTS.reduce((m, q) => q.pos !== null && q.pos > m ? q.pos : m, -1) + 1;
+            const slots = existing.concat(Array.from({ length: ids.length - existing.length }, () => next++)).sort((a, b) => a - b);
+            const prev = ids.map(id => [id, byId[id].pos]);
+            ids.forEach((id, i) => { byId[id].pos = slots[i]; });
+            try {
+                const res = await fetch('/api/quests/order', {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: new URLSearchParams({ pairs: ids.map((id, i) => `${id}:${slots[i]}`).join(',') })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+            } catch (e) {
+                console.error(e);
+                prev.forEach(([id, p]) => { byId[id].pos = p; });
+                alert('Nie udało się zapisać kolejności.');
+            }
+            render();
+        }
+
+        async function resetOrder() {
+            if (!confirm('Przywrócić domyślną kolejność wszystkich questów?')) return;
+            try {
+                const res = await fetch('/api/quests/order/reset', { method: 'POST' });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                QUESTS.forEach(q => { q.pos = null; });
+                render();
+            } catch (e) { console.error(e); alert('Nie udało się przywrócić kolejności.'); }
         }
 
         // skrypt logów (albo inna karta) zmienił stany questów - dociągamy je bez przeładowania strony
