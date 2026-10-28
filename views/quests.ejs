@@ -135,6 +135,13 @@
 
         /* --- SEKCJE TRADERÓW --- */
         .trader-section { margin-bottom: 22px; }
+        .any-sep {
+            display: flex; align-items: center; gap: 10px; margin: 18px 4px 10px; color: #888;
+            font-size: 0.78em; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px;
+        }
+        .any-sep::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
+        .any-sep small { color: #666; font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 1.05em; }
+        .any-sep:first-child { margin-top: 0; }
         .trader-head { display: flex; align-items: center; gap: 10px; margin: 0 4px 10px; }
         .trader-head img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border-soft); }
         .trader-name { font-weight: 800; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -468,6 +475,21 @@
             return pa - pb;
         }
 
+        // Dwie części: najpierw questy na konkretnych mapach, pod spodem osobno "dowolna mapa"
+        // (szukanie przedmiotów, modyfikacja broni, oddawanie...). Każda część to osobna siatka,
+        // więc przeciąganie działa w obrębie części.
+        function questGrids(qs) {
+            const onMap = qs.filter(q => !isAnyMap(q));
+            const anyMap = qs.filter(isAnyMap);
+            let html = onMap.length ? `<div class="quest-grid">${onMap.map(questCard).join('')}</div>` : '';
+            if (anyMap.length) {
+                html += `<div class="any-sep" title="Questy bez konkretnej mapy: znajdź w raidzie, zmodyfikuj broń, oddaj przedmioty itp.">
+                    <span>🗺️ Dowolna mapa</span><small>szukanie, broń, oddawanie · ${anyMap.length}</small></div>
+                    <div class="quest-grid">${anyMap.map(questCard).join('')}</div>`;
+            }
+            return html;
+        }
+
         function render() {
             // w trakcie przeciągania nie przerysowujemy (np. odświeżenie stanów ze skryptu) - zrobimy to po upuszczeniu
             if (drag.card) { drag.pendingRender = true; return; }
@@ -492,7 +514,7 @@
                 // jedna siatka: najpierw wg stanu (w trakcie na górze), potem kolejność traderów i poziom
                 const qs = list.slice().sort((a, b) => (ORDER[viewState(a)] - ORDER[viewState(b)]) || manualCmp(a, b) || byTrader(a.trader, b.trader) || (a.minLevel - b.minLevel) || a.name.localeCompare(b.name));
                 document.getElementById('questList').innerHTML = qs.length
-                    ? `<div class="quest-grid">${qs.map(questCard).join('')}</div>`
+                    ? questGrids(qs)
                     : (QUESTS.length ? '<div class="empty-state">Nic nie pasuje do filtrów.</div>' : '');
                 return;
             }
@@ -508,7 +530,7 @@
                         <span class="trader-count">${done} / ${all.length}</span>
                         <span class="trader-bar"><i style="width:${all.length ? Math.round(done / all.length * 100) : 0}%"></i></span>
                     </div>
-                    <div class="quest-grid">${qs.map(questCard).join('')}</div>
+                    ${questGrids(qs)}
                 </div>`;
             }).join('');
             document.getElementById('questList').innerHTML = html || (QUESTS.length ? '<div class="empty-state">Nic nie pasuje do filtrów.</div>' : '');
