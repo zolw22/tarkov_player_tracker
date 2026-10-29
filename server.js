@@ -52,13 +52,22 @@ app.use(express.static(path.join(__dirname, 'public')));
 const SYNC_INTERVAL = 12 * 60 * 60 * 1000; // 12h
 const PRICES_INTERVAL = 10 * 60 * 1000;    // 10 min
 
-// --- STATUS API (do wyświetlenia w UI, czy tarkov.dev żyje i za ile kolejna próba) ---
+// --- STATUS ŹRÓDEŁ DANYCH (do wyświetlenia w UI) ---
+// Główne API (GraphQL, api.tarkov.dev) nie działa od lipca 2026 i raczej nie wróci, więc domyślnie
+// korzystamy z plików json.tarkov.dev. GraphQL sprawdzamy raz na dobę (probeGraphql) - jeśli ożyje,
+// przełączamy się na nie, a przy pierwszym błędzie wracamy do plików do następnego sprawdzenia.
+// "online" = czy dane w ogóle da się pobrać (z któregokolwiek źródła) - tylko wtedy pokazujemy pasek błędu.
+const GRAPHQL_PROBE_INTERVAL = 24 * 60 * 60 * 1000; // 24h
 const apiStatus = {
-    online: true,       // czy ostatnia próba połączenia z api.tarkov.dev się udała
-    lastError: null,    // treść ostatniego błędu
-    lastCheckedAt: null,// kiedy ostatnio odpytano API (epoch ms)
-    nextRetryAt: null,  // epoch ms kolejnej próby w trakcie aktywnego retry (backoff), null gdy nieaktywny
-    nextAutoSyncAt: Date.now() + PRICES_INTERVAL // epoch ms kolejnej automatycznej synchronizacji cen
+    online: true,             // czy ostatnie pobranie danych (z dowolnego źródła) się udało
+    lastError: null,          // treść ostatniego błędu pobierania danych
+    lastCheckedAt: null,      // kiedy ostatnio pobierano dane (epoch ms)
+    nextRetryAt: null,        // zostawione dla zgodności z UI (brak ponawiania w kółko)
+    nextAutoSyncAt: Date.now() + PRICES_INTERVAL, // epoch ms kolejnej automatycznej synchronizacji cen
+    source: 'json',           // skąd ostatnio przyszły dane: 'graphql' albo 'json'
+    graphqlAvailable: false,  // wynik ostatniego sprawdzenia GraphQL
+    graphqlCheckedAt: null,
+    graphqlNextCheckAt: null
 };
 
 const db = new sqlite3.Database('./tarkov_tracker.db', (err) => {
@@ -160,6 +169,10 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN objectives TEXT DEFAULT '[]'",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN keys TEXT DEFAULT '[]'",
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN normalized_name TEXT DEFAULT ''",
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN price_pve_min INTEGER DEFAULT 0",
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN price_pve_avg INTEGER DEFAULT 0",
+                    "ALTER TABLE tarkov_items_cache ADD COLUMN price_pve_max INTEGER DEFAULT 0",
                     "ALTER TABLE quest_status ADD COLUMN trader TEXT DEFAULT ''",
                     "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
@@ -188,6 +201,10 @@ function initializeDatabase() {
 
 function startBackgroundTasks() {
     console.log("🚀 [SYSTEM] Uruchamianie procesów w tle...");
+
+    // GraphQL sprawdzamy przy starcie i potem raz na dobę (jeśli ożyje, probeGraphql sam odświeży dane)
+    probeGraphql();
+    setInterval(probeGraphql, GRAPHQL_PROBE_INTERVAL);
 
     // Uruchom aktualizację cen
     updateItemCache();
@@ -245,37 +262,56 @@ async function runMapSync() {
     }
 }
 
-// api.tarkov.dev czasem zgłasza przejściową awarię jako 503, czasem jako 422 z body
-// {"errors":["GraphQL server unavailable..."]} - traktujemy jako nie-retryable tylko
-// jednoznacznie trwałe błędy klienta (zły request/auth/routing), wszystko inne ponawiamy.
-const PERMANENT_ERROR_STATUSES = [400, 401, 403, 404];
+// --- GRAPHQL (api.tarkov.dev) - używane tylko, gdy dobowe sprawdzenie wykazało, że działa ---
+// Błąd "wyłączone" ma flagę graphqlDisabled, żeby wywołujący nie logowali go jako awarii.
+function graphqlDisabledError() { const e = new Error('GraphQL wyłączone (używam json.tarkov.dev)'); e.graphqlDisabled = true; return e; }
 
-// --- API HELPER (retry z backoffem, np. gdy api.tarkov.dev leży) ---
-async function tarkovApiRequest(payload, { retries = 4, baseDelayMs = 3000 } = {}) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-        try {
-            const response = await axios.post('https://api.tarkov.dev/graphql', payload, { headers: { 'User-Agent': PROJECT_UA }, timeout: 15000 });
-            apiStatus.online = true;
-            apiStatus.lastError = null;
-            apiStatus.nextRetryAt = null;
-            apiStatus.lastCheckedAt = Date.now();
-            return response;
-        } catch (e) {
-            const status = e.response ? e.response.status : null;
-            const isRetryable = !status || !PERMANENT_ERROR_STATUSES.includes(status);
-            const bodyMsg = e.response && e.response.data && e.response.data.errors ? e.response.data.errors[0] : null;
-            apiStatus.online = false;
-            apiStatus.lastError = bodyMsg || `${status || e.code || e.message}`;
-            apiStatus.lastCheckedAt = Date.now();
-
-            if (attempt === retries || !isRetryable) { apiStatus.nextRetryAt = null; throw e; }
-
-            const wait = baseDelayMs * attempt;
-            apiStatus.nextRetryAt = Date.now() + wait;
-            console.warn(`⚠️ [RETRY] api.tarkov.dev odpowiedziało błędem (${apiStatus.lastError}). Próba ${attempt}/${retries}, ponawiam za ${wait / 1000}s...`);
-            await new Promise(resolve => setTimeout(resolve, wait));
-        }
+async function tarkovApiRequest(payload) {
+    if (!apiStatus.graphqlAvailable) throw graphqlDisabledError();
+    try {
+        const response = await axios.post('https://api.tarkov.dev/graphql', payload, { headers: { 'User-Agent': PROJECT_UA }, timeout: 20000 });
+        if (response.data && response.data.errors && !response.data.data) throw new Error(String(response.data.errors[0] && (response.data.errors[0].message || response.data.errors[0])));
+        apiStatus.online = true;
+        apiStatus.lastError = null;
+        apiStatus.lastCheckedAt = Date.now();
+        apiStatus.source = 'graphql';
+        return response;
+    } catch (e) {
+        // jeden błąd = wracamy do plików aż do następnego dobowego sprawdzenia (bez ponawiania w kółko)
+        const bodyMsg = e.response && e.response.data && e.response.data.errors ? e.response.data.errors[0] : null;
+        apiStatus.graphqlAvailable = false;
+        console.warn(`⚠️ [API] GraphQL przestał odpowiadać (${bodyMsg || (e.response && e.response.status) || e.code || e.message}) - wracam do json.tarkov.dev do następnego sprawdzenia.`);
+        throw e;
     }
+}
+
+// Raz na dobę: czy GraphQL znowu działa? Jeśli właśnie ożył - od razu odświeżamy dane z niego.
+async function probeGraphql() {
+    let ok = false, reason = '';
+    try {
+        const r = await axios.post('https://api.tarkov.dev/graphql', { query: '{ __typename }' }, { headers: { 'User-Agent': PROJECT_UA }, timeout: 15000 });
+        ok = !!(r.data && r.data.data && r.data.data.__typename);
+        if (!ok) reason = 'brak danych w odpowiedzi';
+    } catch (e) {
+        const bodyMsg = e.response && e.response.data && e.response.data.errors ? e.response.data.errors[0] : null;
+        reason = bodyMsg || (e.response && e.response.status) || e.code || e.message;
+    }
+    const wasAvailable = apiStatus.graphqlAvailable;
+    apiStatus.graphqlAvailable = ok;
+    apiStatus.graphqlCheckedAt = Date.now();
+    apiStatus.graphqlNextCheckAt = Date.now() + GRAPHQL_PROBE_INTERVAL;
+    if (ok) console.log("🛰️ [API] GraphQL (api.tarkov.dev) działa - używam go jako głównego źródła.");
+    else console.log(`🛰️ [API] GraphQL nadal nie działa (${reason}) - zostaję przy json.tarkov.dev, sprawdzę ponownie za 24h.`);
+    if (ok && !wasAvailable) {
+        updateItemCache();
+        setTimeout(runKappaSync, 2000);
+        setTimeout(runHideoutSync, 4000);
+    }
+    return ok;
+}
+// log "GraphQL zawiódł" tylko przy prawdziwej awarii, nie gdy GraphQL jest po prostu wyłączone
+function logGraphqlFallback(tag, err) {
+    if (!err || !err.graphqlDisabled) console.warn(`⚠️ [${tag}] GraphQL zawiódł, próbuję json.tarkov.dev...`);
 }
 
 // --- JSON API (json.tarkov.dev) - zapasowe źródło, gdy GraphQL (api.tarkov.dev) pada ---
@@ -297,30 +333,64 @@ function resolveName(rawName, id, normalizedName) {
 }
 
 async function fetchJsonApi(path) {
-    const res = await axios.get(`https://json.tarkov.dev${path}`, { headers: { 'User-Agent': PROJECT_UA }, timeout: 20000 });
-    return res.data.data;
+    try {
+        const res = await axios.get(`https://json.tarkov.dev${path}`, { headers: { 'User-Agent': PROJECT_UA }, timeout: 60000 });
+        apiStatus.online = true;
+        apiStatus.lastError = null;
+        apiStatus.lastCheckedAt = Date.now();
+        apiStatus.source = 'json';
+        return res.data.data;
+    } catch (e) {
+        // słowniki nazw (*_en) są opcjonalne - ich brak nie oznacza, że dane leżą
+        if (!/_en$/.test(path)) {
+            apiStatus.online = false;
+            apiStatus.lastError = `json.tarkov.dev: ${(e.response && e.response.status) || e.code || e.message}`;
+            apiStatus.lastCheckedAt = Date.now();
+        }
+        throw e;
+    }
 }
 
-async function fetchItemsFromJsonApi() {
-    const data = await fetchJsonApi('/regular/items');
+// Dane z json.tarkov.dev podają w polu "name" KLUCZ słownika (np. "5a3a...bf Name"), a prawdziwe
+// nazwy są w osobnych plikach *_en (items_en, tasks_en, traders_en, hideout_en). Zwraca nazwę
+// ze słownika albo fallback (nazwa ze sluga), gdy słownika lub wpisu brak.
+function localize(dict, rawKey, fallback) {
+    const v = dict && typeof rawKey === 'string' ? dict[rawKey] : null;
+    return (typeof v === 'string' && v.trim()) ? v.trim() : fallback;
+}
+// klucz porównawczy nazw: bez wielkości liter, akcentów i znaków niealfanumerycznych - dzięki temu
+// "First in Line" == "First In Line" (stara nazwa ze sluga), "Gunsmith - Part 1" == "Gunsmith Part 1"
+function nameKey(s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]/g, '');
+}
+
+// mode: 'regular' (PvP) albo 'pve' - ceny na PvE są osobne i mocno różne od PvP
+async function fetchItemsFromJsonApi(mode = 'regular', { withNames = true } = {}) {
+    const [data, names] = await Promise.all([
+        fetchJsonApi(`/${mode}/items`),
+        withNames ? fetchJsonApi(`/${mode}/items_en`).catch(() => null) : Promise.resolve(null)
+    ]);
     const rawList = Object.values(data.items || {});
     if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista itemów');
 
-    if (looksLikePlaceholder(rawList[0].name, rawList[0].id)) {
-        console.warn("⚠️ [MARKET] tarkov.dev nie zwraca prawdziwych nazw (ich backend danych gry jest wyłączony) - używam nazw wyprowadzonych ze slugów (normalizedName). Ceny i obrazki są prawdziwe.");
+    if (withNames && !names && looksLikePlaceholder(rawList[0].name, rawList[0].id)) {
+        console.warn("⚠️ [MARKET] Brak słownika nazw items_en - używam nazw wyprowadzonych ze slugów (normalizedName).");
     }
     return rawList.map(i => {
-        const name = resolveName(i.name, i.id, i.normalizedName);
-        return { ...i, name, shortName: looksLikePlaceholder(i.shortName, i.id) ? name : i.shortName };
+        const name = localize(names, i.name, resolveName(i.name, i.id, i.normalizedName));
+        const shortName = localize(names, i.shortName, looksLikePlaceholder(i.shortName, i.id) ? name : i.shortName);
+        return { ...i, name, shortName };
     });
 }
 
 // mode: 'regular' (PvP) albo 'pve' - tryb PvE ma kilka własnych questów (np. "[PVE ZONE]")
 async function fetchTasksFromJsonApi(mode = 'regular') {
     // tasks_en = słownik tekstów (id celu -> opis po angielsku, jak w grze); bez niego cele zostają bez opisu
-    const [tasksData, tradersData, mapsData, tasksText] = await Promise.all([
+    // tasks_en = też prawdziwe nazwy questów (klucz "<id> name"), traders_en = nazwy traderów ("<id> Nickname")
+    const [tasksData, tradersData, mapsData, tasksText, tradersText] = await Promise.all([
         fetchJsonApi(`/${mode}/tasks`), fetchJsonApi(`/${mode}/traders`),
-        fetchJsonApi(`/${mode}/maps`).catch(() => ({})), fetchJsonApi(`/${mode}/tasks_en`).catch(() => ({}))
+        fetchJsonApi(`/${mode}/maps`).catch(() => ({})), fetchJsonApi(`/${mode}/tasks_en`).catch(() => ({})),
+        fetchJsonApi(`/${mode}/traders_en`).catch(() => ({}))
     ]);
     const objectiveText = id => (tasksText && typeof tasksText[id] === 'string') ? tasksText[id].trim() : '';
     const mapNameById = {};
@@ -330,14 +400,14 @@ async function fetchTasksFromJsonApi(mode = 'regular') {
     const rawList = Object.values(tasksData.tasks || {});
     if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista questów');
 
-    if (looksLikePlaceholder(rawList[0].name, rawList[0].id)) {
-        console.warn("⚠️ [KAPPA] tarkov.dev nie zwraca prawdziwych nazw questów - używam nazw wyprowadzonych ze slugów (normalizedName).");
-    }
-    const list = rawList.map(t => ({ ...t, name: resolveName(t.name, t.id, t.normalizedName) }));
+    const list = rawList.map(t => ({ ...t, name: localize(tasksText, t.name, localize(tasksText, `${t.id} name`, resolveName(t.name, t.id, t.normalizedName))) }));
 
     const traderById = {};
     Object.values(tradersData || {}).forEach(t => {
-        if (t && t.id) traderById[t.id] = { name: resolveName(t.name, t.id, t.normalizedName), imageLink: t.imageLink || '' };
+        if (t && t.id) traderById[t.id] = {
+            name: localize(tradersText, t.name, localize(tradersText, `${t.id} Nickname`, resolveName(t.name, t.id, t.normalizedName))),
+            imageLink: t.imageLink || ''
+        };
     });
     // id tradera -> nazwa/obrazek: potrzebne dla questów spoza tarkov.dev (np. nowy event), znanych tylko z logów
     if (Object.keys(traderById).length) {
@@ -476,14 +546,20 @@ async function fetchHideoutFromGraphql() {
 }
 
 async function fetchHideoutFromJsonApi() {
-    const [data, tradersData] = await Promise.all([fetchJsonApi('/regular/hideout'), fetchJsonApi('/regular/traders').catch(() => ({}))]);
+    // hideout_en / traders_en = prawdziwe nazwy stacji ("hideout_area_13_name" -> "Library") i traderów
+    const [data, tradersData, hideoutText, tradersText] = await Promise.all([
+        fetchJsonApi('/regular/hideout'), fetchJsonApi('/regular/traders').catch(() => ({})),
+        fetchJsonApi('/regular/hideout_en').catch(() => ({})), fetchJsonApi('/regular/traders_en').catch(() => ({}))
+    ]);
     const rawList = Object.values(data || {});
     if (rawList.length === 0) throw new Error('json.tarkov.dev: pusta lista stacji hideoutu');
     const traderNameById = {};
-    Object.values(tradersData || {}).forEach(t => { if (t && t.id) traderNameById[t.id] = resolveName(t.name, t.id, t.normalizedName); });
+    Object.values(tradersData || {}).forEach(t => {
+        if (t && t.id) traderNameById[t.id] = localize(tradersText, t.name, localize(tradersText, `${t.id} Nickname`, resolveName(t.name, t.id, t.normalizedName)));
+    });
 
     return rawList.map(s => ({
-        id: s.id, name: resolveStationName(s.name, s.normalizedName), normalizedName: s.normalizedName || '', imageLink: s.imageLink || '',
+        id: s.id, name: localize(hideoutText, s.name, resolveStationName(s.name, s.normalizedName)), normalizedName: s.normalizedName || '', imageLink: s.imageLink || '',
         levels: (s.levels || []).map(l => ({
             id: l.id || `${s.id}-${l.level}`, level: l.level, constructionTime: l.constructionTime || 0,
             stationReqs: (l.stationLevelRequirements || []).map(r => ({ stationId: r.station, level: r.level })),
@@ -502,7 +578,7 @@ async function syncHideout() {
     try {
         stations = await fetchHideoutFromGraphql();
     } catch (graphqlErr) {
-        console.warn("⚠️ [HIDEOUT] GraphQL zawiódł, próbuję json.tarkov.dev...");
+        logGraphqlFallback('HIDEOUT', graphqlErr);
         try {
             stations = await fetchHideoutFromJsonApi();
         } catch (jsonErr) {
@@ -546,42 +622,93 @@ async function updateItemCache() {
     let items;
     try {
         const response = await tarkovApiRequest({
-            query: `{ items(lang: en) { id name shortName iconLink lastLowPrice avg24hPrice } }`
+            query: `{ items(lang: en) { id name shortName normalizedName iconLink lastLowPrice avg24hPrice } }`
         });
         items = response.data.data ? response.data.data.items : null;
+        if (!items || items.length === 0) throw new Error('brak itemów w odpowiedzi');
     } catch (graphqlErr) {
-        console.warn("⚠️ [MARKET] GraphQL zawiódł, próbuję json.tarkov.dev...");
+        logGraphqlFallback('MARKET', graphqlErr);
         try {
-            items = await fetchItemsFromJsonApi();
+            items = await fetchItemsFromJsonApi('regular');
         } catch (jsonErr) {
-            console.error("❌ [ERROR] Błąd API Cen (GraphQL i JSON):", jsonErr.message);
+            console.error("❌ [ERROR] Błąd pobierania cen (GraphQL i JSON):", jsonErr.message);
             return;
         }
     }
     if (!items) return;
 
-    db.serialize(() => {
+    // ceny PvE - zawsze z json.tarkov.dev (osobny cennik; bez nazw, bo te już mamy)
+    let pveItems = [];
+    try { pveItems = await fetchItemsFromJsonApi('pve', { withNames: false }); }
+    catch (e) { console.warn("⚠️ [MARKET] Nie udało się pobrać cen PvE:", e.message); }
+
+    await new Promise((resolve) => db.serialize(() => {
         db.run("BEGIN TRANSACTION");
         // UWAGA: celowo NIE "INSERT OR REPLACE" - to kasuje/wstawia wiersz na nowo w SQLite,
         // co resetowałoby kolumnę "maps" (ustawianą osobno przez syncMapLootLocations) do
         // wartości domyślnej przy każdym odświeżeniu cen co 10 min. ON CONFLICT DO UPDATE
         // dotyka tylko wymienionych kolumn.
-        const stmt = db.prepare(`INSERT INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max) VALUES (?, ?, ?, ?, ?, ?, ?)
+        const stmt = db.prepare(`INSERT INTO tarkov_items_cache (id, name, shortName, image, price_min, price_avg, price_max, normalized_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET name=excluded.name, shortName=excluded.shortName, image=excluded.image,
-                price_min=excluded.price_min, price_avg=excluded.price_avg, price_max=excluded.price_max`);
-
+                price_min=excluded.price_min, price_avg=excluded.price_avg, price_max=excluded.price_max,
+                normalized_name=excluded.normalized_name`);
         items.forEach(i => {
             const min = i.lastLowPrice || 0;
             const avg = i.avg24hPrice || 0;
-            const max = Math.round(avg * 1.2);
-            stmt.run(i.id, i.name, i.shortName, i.iconLink, min, avg, max);
+            stmt.run(i.id, i.name, i.shortName, i.iconLink, min, avg, Math.round(avg * 1.2), i.normalizedName || '');
         });
-
         stmt.finalize();
+
+        if (pveItems.length) {
+            const pst = db.prepare("UPDATE tarkov_items_cache SET price_pve_min = ?, price_pve_avg = ?, price_pve_max = ? WHERE id = ?");
+            pveItems.forEach(i => {
+                const min = i.lastLowPrice || 0, avg = i.avg24hPrice || 0;
+                pst.run(min, avg, Math.round(avg * 1.2), i.id);
+            });
+            pst.finalize();
+        }
+
+        // lista Loot trzyma nazwę przedmiotu - utrzymujemy ją zgodną z aktualną nazwą z tarkov.dev
+        db.run(`UPDATE items SET name = (SELECT c.name FROM tarkov_items_cache c WHERE c.id = items.item_id)
+                WHERE item_id <> '' AND EXISTS (SELECT 1 FROM tarkov_items_cache c WHERE c.id = items.item_id AND c.name <> items.name AND c.name <> '')`);
         db.run("COMMIT", () => {
-            console.log(`✅ [MARKET] Ceny zaktualizowane pomyślnie (${items.length} przedmiotów).`);
+            console.log(`✅ [MARKET] Ceny zaktualizowane (${items.length} przedmiotów${pveItems.length ? `, PvE: ${pveItems.length}` : ''}, źródło: ${apiStatus.source}).`);
+            resolve();
         });
-    });
+    }));
+}
+
+// Kappa trzyma wpisy po nazwie. Gdy tarkov.dev zmienia źródło nazw (GraphQL -> nazwy ze sluga ->
+// prawdziwe nazwy ze słownika), ten sam quest/przedmiot mógł trafić do bazy pod kilkoma wersjami
+// nazwy. Tu: (1) scalamy duplikaty o tym samym kluczu nazwy (zostaje wiersz z największym postępem),
+// (2) questom nadajemy aktualną nazwę z tarkov.dev (po task_id albo po kluczu nazwy).
+async function normalizeKappaNames(allTasks) {
+    const rows = await dbAll("SELECT id, name, type, is_collected, task_id FROM kappa_tracker");
+    const groups = {};
+    rows.forEach(r => { (groups[`${r.type}|${nameKey(r.name)}`] = groups[`${r.type}|${nameKey(r.name)}`] || []).push(r); });
+    let merged = 0;
+    for (const list of Object.values(groups)) {
+        if (list.length < 2) continue;
+        list.sort((a, b) => (b.is_collected - a.is_collected) || ((b.task_id ? 1 : 0) - (a.task_id ? 1 : 0)) || (a.id - b.id));
+        const keep = list[0];
+        const taskId = list.map(r => r.task_id).find(Boolean) || '';
+        if (taskId && !keep.task_id) await dbRun("UPDATE kappa_tracker SET task_id = ? WHERE id = ?", [taskId, keep.id]);
+        for (const r of list.slice(1)) { await dbRun("DELETE FROM kappa_tracker WHERE id = ?", [r.id]); merged++; }
+    }
+
+    const taskById = {}, taskByKey = {};
+    allTasks.forEach(t => { taskById[t.id] = t; taskByKey[nameKey(t.name)] = t; });
+    const quests = await dbAll("SELECT id, name, task_id FROM kappa_tracker WHERE type = 'quest'");
+    let renamed = 0;
+    for (const q of quests) {
+        const t = (q.task_id && taskById[q.task_id]) || taskByKey[nameKey(q.name)];
+        if (!t) continue;
+        if (t.name !== q.name || !q.task_id) {
+            await dbRun("UPDATE kappa_tracker SET name = ?, task_id = ? WHERE id = ?", [t.name, t.id, q.id]);
+            if (t.name !== q.name) renamed++;
+        }
+    }
+    if (merged || renamed) console.log(`🧹 [KAPPA] Ujednolicono nazwy: scalone duplikaty ${merged}, zmienione nazwy questów ${renamed}.`);
 }
 
 // --- SYNCHRONIZACJA KAPPY ---
@@ -603,7 +730,7 @@ async function syncKappaWithAPI() {
         // GraphQL potrafi odpowiedzieć 200 z błędem w body (np. zmiana schematu) - wtedy też idziemy w JSON
         if (!allTasks || allTasks.length === 0) throw new Error((response.data.errors && response.data.errors[0] && response.data.errors[0].message) || 'brak questów w odpowiedzi');
     } catch (graphqlErr) {
-        console.warn("⚠️ [KAPPA] GraphQL zawiódł, próbuję json.tarkov.dev...");
+        logGraphqlFallback('KAPPA', graphqlErr);
         try {
             allTasks = await fetchTasksFromJsonApi();
         } catch (jsonErr) {
@@ -668,11 +795,18 @@ async function syncKappaWithAPI() {
             db.run("COMMIT");
         });
 
-        const collectorTask = allTasks.find(t => t.name === "Collector");
+        const collectorTask = allTasks.find(t => nameKey(t.name) === 'collector');
         const fenceImage = collectorTask && collectorTask.trader ? collectorTask.trader.imageLink : '';
-        const collectorItems = collectorTask ? collectorTask.objectives.filter(obj => obj.item).map(obj => ({
-            name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: '', reqNames: '[]', task_id: ''
-        })) : [];
+        // slug przedmiotu (normalized_name) - po nim rozpoznajemy stare wpisy Kappy zapisane pod nazwą ze sluga
+        const slugRows = await dbAll("SELECT id, normalized_name FROM tarkov_items_cache WHERE normalized_name <> ''");
+        const slugById = {}; slugRows.forEach(r => { slugById[r.id] = r.normalized_name; });
+        const collectorItems = collectorTask ? collectorTask.objectives.filter(obj => obj.item).map(obj => {
+            const itemId = obj.items && obj.items[0] ? obj.items[0].id : null;
+            return {
+                name: obj.item.name, image: obj.item.iconLink || '', type: 'item', min_level: 55, trader: 'Fence', trader_image: fenceImage, req: 'Quest: Collector', faction: 'Any', map: 'All', wiki_link: '', reqNames: '[]', task_id: '',
+                aliases: itemId && slugById[itemId] ? [humanizeSlug(slugById[itemId])] : []
+            };
+        }) : [];
         const requiredTasks = allTasks.filter(t => t.kappaRequired === true).map(t => {
             const reqNames = t.taskRequirements.map(r => r.task.name);
             return {
@@ -684,18 +818,31 @@ async function syncKappaWithAPI() {
         
         const everything = [...collectorItems, ...requiredTasks];
         let newCount = 0;
-        
-        const upsert = (item) => new Promise((resolve) => {
-            db.get("SELECT id FROM kappa_tracker WHERE name = ?", [item.name], (err, row) => {
-                if (!row) {
-                    db.run(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image, requirement_names, task_id) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id], () => resolve(1));
-                } else {
-                    db.run(`UPDATE kappa_tracker SET min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=?, requirement_names=?, task_id=? WHERE id=?`, [item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id, row.id], () => resolve(0));
-                }
-            });
-        });
-        
-        for (const e of everything) { newCount += await upsert(e); }
+
+        // --- Ujednolicenie nazw w Kappie (nazwy ze sluga -> prawdziwe nazwy z tarkov.dev) ---
+        // 1) duplikaty tego samego wpisu pod różnymi wersjami nazwy scalamy (zostaje najlepszy postęp)
+        await normalizeKappaNames(allTasks);
+
+        // 2) dopasowanie po kluczu nazwy (nameKey) zamiast dokładnej nazwy; przy różnicy - zmiana nazwy
+        const kRows = await dbAll("SELECT id, name, type FROM kappa_tracker");
+        const kByKey = {}; kRows.forEach(r => { kByKey[`${r.type}|${nameKey(r.name)}`] = r; });
+        const findRow = (item) => {
+            for (const n of [item.name, ...(item.aliases || [])]) {
+                const r = kByKey[`${item.type}|${nameKey(n)}`];
+                if (r) return r;
+            }
+            return null;
+        };
+        for (const item of everything) {
+            const row = findRow(item);
+            if (!row) {
+                await dbRun(`INSERT INTO kappa_tracker (name, image, is_collected, is_new, type, min_level, trader, requirements, faction, map, wiki_link, trader_image, requirement_names, task_id) VALUES (?, ?, 0, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [item.name, item.image, item.type, item.min_level, item.trader, item.req, item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id]);
+                kByKey[`${item.type}|${nameKey(item.name)}`] = { name: item.name, type: item.type };
+                newCount++;
+            } else {
+                await dbRun(`UPDATE kappa_tracker SET name=?, min_level=?, trader=?, requirements=?, type=?, image=?, faction=?, map=?, wiki_link=?, trader_image=?, requirement_names=?, task_id=CASE WHEN ? <> '' THEN ? ELSE task_id END WHERE id=?`, [item.name, item.min_level, item.trader, item.req, item.type, item.image || '', item.faction, item.map, item.wiki_link, item.trader_image, item.reqNames, item.task_id, item.task_id, row.id]);
+            }
+        }
         
         if (newCount > 0) console.log(`✨ [UPDATE] Dodano ${newCount} nowych wpisów do bazy Kappy.`);
         else console.log("✅ [UPDATE] Baza Kappy jest w pełni aktualna.");
@@ -726,12 +873,12 @@ app.get('/kappa', (req, res) => {
     db.all(`SELECT * FROM kappa_tracker ORDER BY type ASC, is_collected ASC, min_level ASC`, [], (err, rows) => {
         const items = rows.filter(r => r.type === 'item');
         // questy oznaczone jako zrobione po nazwie - do sprawdzania, czy prerekwizyty questa są spełnione
-        const doneNames = new Set(rows.filter(r => r.is_collected === 2).map(r => r.name));
+        const doneNames = new Set(rows.filter(r => r.is_collected === 2).map(r => nameKey(r.name))); // po kluczu - stare/nowe wersje nazw
 
         const quests = rows.filter(r => r.type === 'quest').map(q => {
             let reqNames = [];
             try { reqNames = JSON.parse(q.requirement_names || '[]'); } catch (e) { reqNames = []; }
-            const locked = q.is_collected === 0 && reqNames.length > 0 && !reqNames.every(n => doneNames.has(n));
+            const locked = q.is_collected === 0 && reqNames.length > 0 && !reqNames.every(n => doneNames.has(nameKey(n)));
             return { ...q, locked };
         });
 
@@ -750,10 +897,16 @@ app.get('/kappa', (req, res) => {
 app.get('/api/status', (req, res) => res.json(apiStatus));
 
 app.get('/api/prices', (req, res) => {
-    db.all(`SELECT name, price_min, price_avg, price_max FROM tarkov_items_cache`, [], (err, rows) => {
+    db.all(`SELECT name, price_min, price_avg, price_max, price_pve_min, price_pve_avg, price_pve_max FROM tarkov_items_cache`, [], (err, rows) => {
         if(err) return res.json([]);
         const priceMap = {};
-        rows.forEach(r => { priceMap[r.name] = { min: r.price_min, avg: r.price_avg, max: r.price_max }; });
+        rows.forEach(r => {
+            priceMap[r.name] = {
+                min: r.price_min, avg: r.price_avg, max: r.price_max,
+                // osobny cennik PvE (null = brak danych PvE dla tego przedmiotu -> strona szacuje z PvP)
+                pve: (r.price_pve_avg || r.price_pve_min) ? { min: r.price_pve_min || 0, avg: r.price_pve_avg || 0, max: r.price_pve_max || 0 } : null
+            };
+        });
         res.json(priceMap);
     });
 });
@@ -821,7 +974,7 @@ async function loadHideoutData() {
     const [stations, levels, levelItems, progress, haveRows] = await Promise.all([
         dbAll("SELECT * FROM hideout_stations ORDER BY name ASC"),
         dbAll("SELECT * FROM hideout_levels ORDER BY station_id, level ASC"),
-        dbAll(`SELECT li.level_id, li.item_id, li.count, li.fir, c.name, c.shortName, c.image, c.maps, c.price_avg
+        dbAll(`SELECT li.level_id, li.item_id, li.count, li.fir, c.name, c.shortName, c.image, c.maps, c.price_avg, c.price_pve_avg, c.price_pve_min
                FROM hideout_level_items li LEFT JOIN tarkov_items_cache c ON c.id = li.item_id`),
         dbAll("SELECT * FROM hideout_progress"),
         dbAll("SELECT * FROM hideout_have")
@@ -841,7 +994,7 @@ async function loadHideoutData() {
         itemsByLevel[li.level_id].push({
             itemId: li.item_id, count: li.count, fir: li.fir,
             name: li.name || `Nieznany przedmiot (${li.item_id})`, shortName: li.shortName || '', image: li.image || '',
-            mapsInfo, priceAvg: li.price_avg || 0
+            mapsInfo, priceAvg: li.price_avg || 0, priceAvgPve: li.price_pve_avg || li.price_pve_min || 0
         });
     });
 
@@ -1093,12 +1246,12 @@ app.get('/quests', async (req, res) => {
         ]);
         const posById = {}; orderRows.forEach(o => { posById[o.quest_id] = o.pos; });
         // starsze, pełniejsze dane z listy Kappy (z czasów działającego GraphQL) jako uzupełnienie braków
-        const kappaByName = {}; kappaRows.forEach(k => { kappaByName[k.name] = k; });
-        const idByName = {}; tasks.forEach(t => { idByName[t.name] = t.id; });
+        const kappaByName = {}; kappaRows.forEach(k => { kappaByName[nameKey(k.name)] = k; });
+        const idByName = {}; tasks.forEach(t => { idByName[nameKey(t.name)] = t.id; });
         const statusById = {}; statuses.forEach(s => { statusById[s.quest_id] = s; });
         // tarkov.dev ma teraz niepełną flagę kappaRequired - za Kappę uznajemy też to, co jest na liście Kappy
         const kappaIds = new Set(kappaRows.map(k => k.task_id).filter(Boolean));
-        const kappaNames = new Set(kappaRows.map(k => k.name));
+        const kappaNames = new Set(kappaRows.map(k => nameKey(k.name)));
 
         const itemIds = new Set();
         const parsed = tasks.map(t => {
@@ -1108,9 +1261,9 @@ app.get('/quests', async (req, res) => {
             keys.forEach(k => k.ids.slice(0, 3).forEach(id => itemIds.add(id)));
             let reqIds = parseJson(t.req_ids, []);
             let minLevel = t.min_level || 0;
-            const k = kappaByName[t.name];
+            const k = kappaByName[nameKey(t.name)];
             if (k) {
-                if (reqIds.length === 0) reqIds = parseJson(k.requirement_names, []).map(n => idByName[n]).filter(Boolean);
+                if (reqIds.length === 0) reqIds = parseJson(k.requirement_names, []).map(n => idByName[nameKey(n)]).filter(Boolean);
                 if (!minLevel) minLevel = k.min_level || 0;
             }
             return { t, give, keys, reqIds, minLevel, objectives: parseJson(t.objectives, []) };
@@ -1124,7 +1277,7 @@ app.get('/quests', async (req, res) => {
             return {
                 id: t.id, name: t.name, trader: t.trader, traderImage: t.trader_image || '', minLevel,
                 map: t.map || '', maps: parseJson(t.maps, []), wiki: t.wiki || '', faction: t.faction || 'Any', image: t.image || '',
-                kappa: !!t.kappa || kappaIds.has(t.id) || kappaNames.has(t.name),
+                kappa: !!t.kappa || kappaIds.has(t.id) || kappaNames.has(nameKey(t.name)),
                 reqIds, objectives, status: st ? st.status : 'todo', statusAt: st ? st.at : null, source: st ? st.source : null,
                 pos: posById[t.id] !== undefined ? posById[t.id] : null,
                 keys: keys.map(k => ({ map: k.map, alternatives: k.ids.length, items: k.ids.slice(0, 3).map(itemInfo) })),

@@ -342,7 +342,7 @@
         function renderApiBanner() {
             const banner = document.getElementById('apiStatusBanner');
             if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
-            banner.textContent = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Lista questów pochodzi z zapasowego źródła.`;
+            banner.textContent = `⚠️ Nie udało się pobrać danych z tarkov.dev (${apiStatusData.lastError || 'błąd'}). Lista questów może być nieaktualna.`;
             banner.classList.add('show');
         }
         setInterval(renderApiBanner, 1000); setInterval(pollApiStatus, 5000); pollApiStatus().then(renderApiBanner);

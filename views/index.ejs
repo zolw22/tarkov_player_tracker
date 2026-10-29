@@ -481,7 +481,7 @@
             if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
 
             const now = Date.now();
-            let text = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dodawanie po nazwie nadal działa.`;
+            let text = `⚠️ Nie udało się pobrać danych z tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dodawanie po nazwie nadal działa.`;
             if (apiStatusData.nextRetryAt && apiStatusData.nextRetryAt > now) {
                 text += ` Kolejna próba za ${formatCountdown(apiStatusData.nextRetryAt - now)}.`;
             } else if (apiStatusData.nextAutoSyncAt && apiStatusData.nextAutoSyncAt > now) {
@@ -585,9 +585,18 @@
                     let baseMax = priceCache[name].max || 0;
 
                     if (currentMode === 'pve') {
-                        baseAvg = Math.round(baseAvg * 1.5);
-                        baseMin = Math.round(baseMin * 1.5);
-                        baseMax = Math.round(baseMax * 1.5);
+                        const pve = priceCache[name].pve;
+                        if (pve && (pve.avg || pve.min)) {
+                            // prawdziwy cennik PvE z tarkov.dev (gdy brak średniej - bierzemy najniższą ofertę)
+                            baseMin = pve.min || pve.avg;
+                            baseAvg = pve.avg || pve.min;
+                            baseMax = pve.max || Math.round(baseAvg * 1.2);
+                        } else {
+                            // brak danych PvE dla tego przedmiotu - szacunek z cen PvP
+                            baseAvg = Math.round(baseAvg * 1.5);
+                            baseMin = Math.round(baseMin * 1.5);
+                            baseMax = Math.round(baseMax * 1.5);
+                        }
                     }
 
                     const totalForStack = baseAvg * qty;

@@ -311,7 +311,7 @@
         function renderApiBanner() {
             const banner = document.getElementById('apiStatusBanner');
             if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
-            banner.textContent = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dane hideoutu mogą być nieaktualne.`;
+            banner.textContent = `⚠️ Nie udało się pobrać danych z tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dane hideoutu mogą być nieaktualne.`;
             banner.classList.add('show');
         }
         setInterval(renderApiBanner, 1000); setInterval(pollApiStatus, 5000); pollApiStatus().then(renderApiBanner);
@@ -355,6 +355,10 @@
         }
         function setNeedFilter(v) { needFilter = String(v || '').trim().toLowerCase(); renderPinned(); }
 
+        // ceny wg trybu wybranego na stronie Loot (PvP/PvE); PvE z osobnego cennika, a gdy brak - szacunek z PvP
+        const PRICE_MODE = (() => { try { return localStorage.getItem('tarkov_mode') === 'pve' ? 'pve' : 'pvp'; } catch (e) { return 'pvp'; } })();
+        const unitPrice = i => PRICE_MODE === 'pve' ? (i.priceAvgPve || Math.round((i.priceAvg || 0) * 1.5)) : (i.priceAvg || 0);
+
         function renderPinned() {
             const { pinned, items } = aggregatePinned();
             const chips = document.getElementById('goalChips'), grid = document.getElementById('needGrid');
@@ -377,7 +381,7 @@
             grid.innerHTML = items.map(i => {
                 const have = haveOf(i.itemId), done = have >= i.total, missing = Math.max(0, i.total - have);
                 if (!CURRENCY[i.name]) missingTotal += missing;
-                if (!CURRENCY[i.name] && !i.fir) cost += missing * (i.priceAvg || 0);
+                if (!CURRENCY[i.name] && !i.fir) cost += missing * unitPrice(i);
                 // filtr dotyczy tylko tego, co widać - sumy i koszt liczą wszystkie przypięte
                 if (!needMatchesFilter(i)) return '';
                 shown++;
@@ -409,7 +413,7 @@
             document.querySelector('#needFilterBar .filter-search').classList.toggle('active', !!needFilter);
             document.getElementById('needFilterCount').innerHTML = needFilter ? `Pasuje: <b>${shown}</b> z ${items.length}` : '';
             document.getElementById('needNoMatch').style.display = (needFilter && items.length && !shown) ? '' : 'none';
-            document.getElementById('pinnedCost').innerHTML = items.length ? `<small>do dokupienia ≈</small>${fmtNum(cost)} ₽` : '';
+            document.getElementById('pinnedCost').innerHTML = items.length ? `<small>do dokupienia (${PRICE_MODE === 'pve' ? 'PvE' : 'PvP'}) ≈</small>${fmtNum(cost)} ₽` : '';
             document.getElementById('sumPinned').textContent = pinned.length;
             document.getElementById('sumMissing').textContent = fmtNum(missingTotal);
         }

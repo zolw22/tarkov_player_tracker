@@ -362,7 +362,7 @@
                 if (!apiStatusData || apiStatusData.online) { banner.classList.remove('show'); return; }
 
                 const now = Date.now();
-                let text = `⚠️ Brak połączenia z API tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dodawanie itemów/questów po nazwie nadal działa.`;
+                let text = `⚠️ Nie udało się pobrać danych z tarkov.dev (${apiStatusData.lastError || 'błąd'}). Dodawanie itemów/questów po nazwie nadal działa.`;
                 if (apiStatusData.nextRetryAt && apiStatusData.nextRetryAt > now) {
                     text += ` Kolejna próba za ${formatCountdown(apiStatusData.nextRetryAt - now)}.`;
                 } else if (apiStatusData.nextAutoSyncAt && apiStatusData.nextAutoSyncAt > now) {
