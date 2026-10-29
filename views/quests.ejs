@@ -135,13 +135,26 @@
 
         /* --- SEKCJE TRADERÓW --- */
         .trader-section { margin-bottom: 22px; }
-        .any-sep {
-            display: flex; align-items: center; gap: 10px; margin: 18px 4px 10px; color: #888;
-            font-size: 0.78em; font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px;
+        /* separatory części listy: wyraźny pasek z ikoną, tytułem, opisem i licznikiem */
+        .sec-sep {
+            display: flex; align-items: center; gap: 12px; margin: 22px 0 12px; padding: 10px 16px;
+            border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border-soft);
+            border-left: 4px solid #8c8c8c; box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         }
-        .any-sep::after { content: ''; flex: 1; height: 1px; background: var(--border-soft); }
-        .any-sep small { color: #666; font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 1.05em; }
-        .any-sep:first-child { margin-top: 0; }
+        .sec-sep:first-child { margin-top: 0; }
+        .sec-sep .ico { font-size: 1.4em; line-height: 1; }
+        .sec-sep .ttl { font-weight: 800; font-size: 1.02em; color: #e6e6e6; text-transform: uppercase; letter-spacing: 0.6px; }
+        .sec-sep .sub { color: #8a8a8a; font-size: 0.82em; }
+        .sec-sep .cnt { margin-left: auto; font-family: 'Consolas', monospace; font-weight: 700; color: #bbb; background: #222; border: 1px solid #333; border-radius: 999px; padding: 2px 10px; }
+        .sec-sep.any { border-left-color: #8fb0d0; background: linear-gradient(90deg, rgba(143,176,208,0.10), var(--panel) 60%); }
+        .sec-sep.any .ttl { color: #b9d3ea; }
+        .sec-sep.new { border-left-color: #ff9a3c; background: linear-gradient(90deg, rgba(255,154,60,0.14), var(--panel) 60%); }
+        .sec-sep.new .ttl { color: #ffb36b; }
+        .quest.unknown { border-color: rgba(255,154,60,0.45); background: linear-gradient(180deg, rgba(255,154,60,0.07), var(--panel-2) 45%); }
+        .q-unknown-note { font-size: 0.76em; color: #a88a6a; line-height: 1.4; }
+        .q-unknown-note code { color: #777; font-size: 0.95em; }
+        .rename-btn { background: none; border: 1px solid #3a3a3a; color: #999; border-radius: 6px; cursor: pointer; font-size: 0.75em; padding: 1px 6px; margin-left: 6px; }
+        .rename-btn:hover { border-color: #ff9a3c; color: #ffb36b; }
         .trader-head { display: flex; align-items: center; gap: 10px; margin: 0 4px 10px; }
         .trader-head img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1px solid var(--border-soft); }
         .trader-name { font-weight: 800; color: #ccc; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -430,22 +443,24 @@
                 return `<button class="${s} ${active ? 'active' : ''}" onclick="setStatus('${q.id}', '${s}')">${{ todo: 'Do zrobienia', started: 'W trakcie', done: 'Ukończony' }[s]}</button>`;
             }).join('');
 
-            return `<div class="quest st-${q.status} ${vs === 'locked' ? 'locked' : ''}" data-id="${q.id}" data-state="${vs}">
+            return `<div class="quest st-${q.status} ${vs === 'locked' ? 'locked' : ''} ${q.unknown ? 'unknown' : ''}" data-id="${q.id}" data-state="${vs}">
                 <div class="q-head">
                     <span class="drag-handle" draggable="true" title="Złap i przeciągnij, żeby zmienić kolejność">✥</span>
-                    ${q.wiki ? `<a class="q-name" href="${esc(q.wiki)}" target="_blank" rel="noopener" title="Otwórz wiki">${esc(q.name)} ↗</a>` : `<span class="q-name">${esc(q.name)}</span>`}
+                    ${q.wiki ? `<a class="q-name" href="${esc(q.wiki)}" target="_blank" rel="noopener" title="Otwórz wiki">${esc(q.name)} ↗</a>`
+                        : `<span class="q-name">${esc(q.name)}${q.unknown ? `<button class="rename-btn" title="Nadaj własną nazwę" onclick="renameQuest('${q.id}')">✏️</button>` : ''}</span>`}
                     <span class="st-chip ${chipCls}">${chipText}</span>
                 </div>
                 ${groupBy === 'flat' ? `<div class="q-trader">${q.traderImage ? `<img src="${esc(q.traderImage)}" alt="">` : ''}${esc(q.trader)}</div>` : ''}
                 <div class="q-badges">
                     ${q.kappa ? '<span class="badge b-kappa">⭐ KAPPA</span>' : ''}
                     ${q.minLevel ? `<span class="badge b-lvl">LVL ${q.minLevel}</span>` : ''}
-                    ${isAnyMap(q)
+                    ${q.unknown ? '<span class="badge b-lvl">🆕 brak danych</span>' : isAnyMap(q)
                         ? '<span class="badge b-map b-anymap" title="Da się zrobić na dowolnej mapie">🗺️ Dowolna mapa</span>'
                         : questMaps(q).slice().sort(byMap).slice(0, 3).map(m => `<span class="badge b-map ${m === mapFilter ? 'b-map-hit' : ''}">🗺️ ${esc(m)}</span>`).join('') +
                           (questMaps(q).length > 3 ? `<span class="badge b-map" title="${esc(questMaps(q).slice().sort(byMap).slice(3).join(', '))}">+${questMaps(q).length - 3}</span>` : '')}
                     ${q.faction !== 'Any' ? `<span class="badge b-faction">${esc(q.faction)}</span>` : ''}
                 </div>
+                ${q.unknown ? `<div class="q-unknown-note">Gra zapisała ten quest w logach, ale tarkov.dev jeszcze go nie opisał (np. nowy event po łatce). Cele, mapa i nazwa uzupełnią się same, gdy go doda. Kliknij ✏️, żeby nadać własną nazwę. <code>${q.id}</code></div>` : ''}
                 ${unmet.length ? `<div class="q-reqs">Najpierw ukończ: <b>${unmet.map(esc).join(', ')}</b></div>` : ''}
                 ${lvlLock ? `<div class="q-reqs">Dostępny od poziomu <b>${q.minLevel}</b></div>` : ''}
                 ${q.objectives.length ? `<details class="q-obj" ${(vs === 'started' || vs === 'failed' || openObj.has(q.id)) ? 'open' : ''} ontoggle="rememberObj('${q.id}', this.open)">
@@ -479,15 +494,41 @@
         // (szukanie przedmiotów, modyfikacja broni, oddawanie...). Każda część to osobna siatka,
         // więc przeciąganie działa w obrębie części.
         function questGrids(qs) {
-            const onMap = qs.filter(q => !isAnyMap(q));
-            const anyMap = qs.filter(isAnyMap);
-            let html = onMap.length ? `<div class="quest-grid">${onMap.map(questCard).join('')}</div>` : '';
+            const fresh = qs.filter(q => q.unknown);
+            const onMap = qs.filter(q => !q.unknown && !isAnyMap(q));
+            const anyMap = qs.filter(q => !q.unknown && isAnyMap(q));
+            const sep = (cls, ico, ttl, sub, n, title) =>
+                `<div class="sec-sep ${cls}" title="${title}"><span class="ico">${ico}</span><span class="ttl">${ttl}</span><span class="sub">${sub}</span><span class="cnt">${n}</span></div>`;
+            let html = '';
+            if (fresh.length) {
+                html += sep('new', '🆕', 'Nowe questy', 'np. event - tarkov.dev jeszcze ich nie opisał', fresh.length,
+                    'Gra zapisała te questy w logach, ale tarkov.dev nie ma jeszcze ich danych. Uzupełnią się same po aktualizacji tarkov.dev.') +
+                    `<div class="quest-grid">${fresh.map(questCard).join('')}</div>`;
+                if (onMap.length) html += sep('', '📍', 'Na konkretnych mapach', '', onMap.length, '');
+            }
+            if (onMap.length) html += `<div class="quest-grid">${onMap.map(questCard).join('')}</div>`;
             if (anyMap.length) {
-                html += `<div class="any-sep" title="Questy bez konkretnej mapy: znajdź w raidzie, zmodyfikuj broń, oddaj przedmioty itp.">
-                    <span>🗺️ Dowolna mapa</span><small>szukanie, broń, oddawanie · ${anyMap.length}</small></div>
-                    <div class="quest-grid">${anyMap.map(questCard).join('')}</div>`;
+                html += sep('any', '🗺️', 'Dowolna mapa', 'szukanie przedmiotów, broń, oddawanie', anyMap.length,
+                    'Questy bez konkretnej mapy: znajdź w raidzie, zmodyfikuj broń, oddaj przedmioty itp.') +
+                    `<div class="quest-grid">${anyMap.map(questCard).join('')}</div>`;
             }
             return html;
+        }
+
+        async function renameQuest(id) {
+            const q = byId[id]; if (!q) return;
+            const v = prompt('Nazwa questa (puste = domyślna):', q.customName || '');
+            if (v === null) return;
+            try {
+                const res = await fetch(`/api/quests/${encodeURIComponent(id)}/name`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ name: v })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const r = await res.json();
+                q.customName = r.name;
+                q.name = r.name || `Nowy quest ${id.slice(-6)}`;
+                render();
+            } catch (e) { console.error(e); alert('Nie udało się zapisać nazwy.'); }
         }
 
         function render() {

@@ -17,8 +17,10 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 
-const VERSION = '1.1';
-const STATE_VERSION = 2; // 2 = wysyłamy też rozpoczęcia/porażki - starszy stan czytamy od nowa
+const VERSION = '1.2';
+// 2 = wysyłamy też rozpoczęcia/porażki; 3 = wysyłamy też tradera (dla questów spoza tarkov.dev).
+// Zmiana wersji = starszy stan czytamy od nowa (serwer pomija to, co już ma).
+const STATE_VERSION = 3;
 const DEFAULTS = {
     server: 'http://192.168.1.209:9999',
     logsDir: 'T:\\TARCZYCE\\Tarkov\\Logs',
@@ -88,7 +90,9 @@ function parseQuestEvents(text) {
         if (o.type !== 'new_message' || !m || ![10, 11, 12].includes(m.type) || typeof m.templateId !== 'string') continue;
         const questId = m.templateId.split(' ')[0];
         if (!/^[0-9a-f]{24}$/i.test(questId)) continue;
-        events.push({ questId, type: m.type, at: (Number(m.dt) || 0) * 1000 });
+        // dialogId = id tradera, od którego przyszła wiadomość (przydaje się dla questów, których tarkov.dev nie zna)
+        const trader = /^[0-9a-f]{24}$/i.test(String(o.dialogId || '')) ? o.dialogId : '';
+        events.push({ questId, type: m.type, at: (Number(m.dt) || 0) * 1000, trader });
     }
     return events;
 }

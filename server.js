@@ -110,6 +110,8 @@ function initializeDatabase() {
         db.run(`CREATE TABLE IF NOT EXISTS quest_status (quest_id TEXT PRIMARY KEY, status TEXT, at INTEGER, source TEXT)`);
         // ręczna kolejność kart na stronie Questy (przeciąganie); brak wpisu = kolejność domyślna
         db.run(`CREATE TABLE IF NOT EXISTS quest_order (quest_id TEXT PRIMARY KEY, pos INTEGER)`);
+        // własne nazwy dla questów, których tarkov.dev jeszcze nie ma (np. nowy event) - nadawane na stronie Questy
+        db.run(`CREATE TABLE IF NOT EXISTS quest_names (quest_id TEXT PRIMARY KEY, name TEXT)`);
         // questy ukończone zanim istniała ta tabela (skrypt v1.0) - przenosimy jako "done"
         db.run(`INSERT OR IGNORE INTO quest_status (quest_id, status, at, source) SELECT quest_id, 'done', completed_at, 'log' FROM quest_completions`);
         // wipe zrobiony wersją bez wipe_at (albo baza sprzed tej funkcji): datę bierzemy z nazwy
@@ -158,6 +160,7 @@ function initializeDatabase() {
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN objectives TEXT DEFAULT '[]'",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE tarkov_tasks_cache ADD COLUMN keys TEXT DEFAULT '[]'",
+                    "ALTER TABLE quest_status ADD COLUMN trader TEXT DEFAULT ''",
                     "ALTER TABLE items ADD COLUMN sort_order INTEGER DEFAULT 0",
                     "ALTER TABLE tarkov_items_cache ADD COLUMN maps TEXT DEFAULT '[]'",
                     "ALTER TABLE items ADD COLUMN item_id TEXT DEFAULT ''",
@@ -312,11 +315,12 @@ async function fetchItemsFromJsonApi() {
     });
 }
 
-async function fetchTasksFromJsonApi() {
+// mode: 'regular' (PvP) albo 'pve' - tryb PvE ma kilka własnych questów (np. "[PVE ZONE]")
+async function fetchTasksFromJsonApi(mode = 'regular') {
     // tasks_en = słownik tekstów (id celu -> opis po angielsku, jak w grze); bez niego cele zostają bez opisu
     const [tasksData, tradersData, mapsData, tasksText] = await Promise.all([
-        fetchJsonApi('/regular/tasks'), fetchJsonApi('/regular/traders'),
-        fetchJsonApi('/regular/maps').catch(() => ({})), fetchJsonApi('/regular/tasks_en').catch(() => ({}))
+        fetchJsonApi(`/${mode}/tasks`), fetchJsonApi(`/${mode}/traders`),
+        fetchJsonApi(`/${mode}/maps`).catch(() => ({})), fetchJsonApi(`/${mode}/tasks_en`).catch(() => ({}))
     ]);
     const objectiveText = id => (tasksText && typeof tasksText[id] === 'string') ? tasksText[id].trim() : '';
     const mapNameById = {};
@@ -335,6 +339,10 @@ async function fetchTasksFromJsonApi() {
     Object.values(tradersData || {}).forEach(t => {
         if (t && t.id) traderById[t.id] = { name: resolveName(t.name, t.id, t.normalizedName), imageLink: t.imageLink || '' };
     });
+    // id tradera -> nazwa/obrazek: potrzebne dla questów spoza tarkov.dev (np. nowy event), znanych tylko z logów
+    if (Object.keys(traderById).length) {
+        db.run("INSERT INTO app_settings (key, value) VALUES ('traders', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(traderById)]);
+    }
     const taskNameById = {};
     list.forEach(t => { taskNameById[t.id] = t.name; });
 
@@ -604,6 +612,16 @@ async function syncKappaWithAPI() {
         }
     }
     if (!allTasks) return;
+
+    // questy istniejące tylko w trybie PvE (gracz gra na PvE) - dokładamy je do listy
+    try {
+        const known = new Set(allTasks.map(t => t.id));
+        const pveOnly = (await fetchTasksFromJsonApi('pve')).filter(t => !known.has(t.id));
+        if (pveOnly.length) {
+            console.log(`🔎 [QUESTY] Dodaję ${pveOnly.length} questów dostępnych tylko w PvE.`);
+            allTasks = allTasks.concat(pveOnly);
+        }
+    } catch (e) { console.warn("⚠️ [QUESTY] Nie udało się pobrać questów PvE:", e.message); }
 
     try {
         db.serialize(() => {
@@ -985,7 +1003,9 @@ async function findKappaQuestRow(questId, name) {
 
 // Zdarzenie z logów: "ukończony" jest ostateczny (nie cofa go późniejszy start/porażka), poza tym
 // wygrywa nowsze zdarzenie. Zwraca { status, name, kappa } gdy coś się zmieniło, inaczej null.
-async function applyQuestLogEvent(questId, status, at) {
+async function applyQuestLogEvent(questId, status, at, trader) {
+    // trader (id z powiadomienia) - uzupełniamy zawsze, nawet gdy stan się nie zmienia (starsze wpisy go nie mają)
+    if (trader) await dbRun("UPDATE quest_status SET trader = ? WHERE quest_id = ? AND (trader IS NULL OR trader = '')", [trader, questId]);
     const existing = await dbGet("SELECT status, at FROM quest_status WHERE quest_id = ?", [questId]);
     if (existing) {
         if (existing.status === status) return null;
@@ -994,7 +1014,7 @@ async function applyQuestLogEvent(questId, status, at) {
     }
     const task = await dbGet("SELECT name FROM tarkov_tasks_cache WHERE id = ?", [questId]);
     const name = task ? task.name : '';
-    await dbRun("INSERT INTO quest_status (quest_id, status, at, source) VALUES (?, ?, ?, 'log') ON CONFLICT(quest_id) DO UPDATE SET status = excluded.status, at = excluded.at, source = 'log'", [questId, status, at]);
+    await dbRun("INSERT INTO quest_status (quest_id, status, at, source, trader) VALUES (?, ?, ?, 'log', ?) ON CONFLICT(quest_id) DO UPDATE SET status = excluded.status, at = excluded.at, source = 'log', trader = COALESCE(NULLIF(excluded.trader, ''), quest_status.trader)", [questId, status, at, trader || '']);
     if (status === 'done') await dbRun("INSERT OR IGNORE INTO quest_completions (quest_id, name, completed_at, received_at) VALUES (?, ?, ?, ?)", [questId, name, at, Date.now()]);
 
     let kappa = null;
@@ -1040,14 +1060,18 @@ app.post('/api/logwatcher/quests', async (req, res) => {
     try {
         const wipeAt = await getWipeAt();
         const events = (Array.isArray(req.body && req.body.events) ? req.body.events : [])
-            .map(ev => ({ questId: String(ev.questId || ''), at: Number(ev.at) || 0, status: QUEST_EVENT_STATUS[ev.type === undefined ? 12 : Number(ev.type)] }))
+            .map(ev => ({
+                questId: String(ev.questId || ''), at: Number(ev.at) || 0,
+                status: QUEST_EVENT_STATUS[ev.type === undefined ? 12 : Number(ev.type)],
+                trader: /^[0-9a-f]{24}$/i.test(String(ev.trader || '')) ? String(ev.trader) : '' // skrypt v1.2+
+            }))
             .filter(ev => /^[0-9a-f]{24}$/i.test(ev.questId) && ev.status)
             .sort((a, b) => a.at - b.at);
         let accepted = 0, started = 0, old = 0;
         const kappaMarked = [];
         for (const ev of events) {
             if (ev.at < wipeAt) { old++; continue; }
-            const r = await applyQuestLogEvent(ev.questId, ev.status, ev.at);
+            const r = await applyQuestLogEvent(ev.questId, ev.status, ev.at, ev.trader);
             if (!r) continue;
             if (r.status === 'done') accepted++;
             if (r.status === 'started') started++;
@@ -1110,11 +1134,47 @@ app.get('/quests', async (req, res) => {
                 }))
             };
         });
+
+        // Questy znane tylko z logów gry - tarkov.dev jeszcze ich nie ma (np. nowy event po łatce).
+        // Pomijamy dzienne/tygodniowe: ich szablony mają id zaczynające się od "6160".
+        const knownIds = new Set(tasks.map(t => t.id));
+        const unknownStatuses = statuses.filter(s => !knownIds.has(s.quest_id) && !s.quest_id.startsWith('6160'));
+        if (unknownStatuses.length) {
+            const [namesRows, tradersRow] = await Promise.all([
+                dbAll("SELECT quest_id, name FROM quest_names"),
+                dbGet("SELECT value FROM app_settings WHERE key = 'traders'")
+            ]);
+            const customName = {}; namesRows.forEach(n => { customName[n.quest_id] = n.name; });
+            const traders = parseJson(tradersRow && tradersRow.value, {});
+            unknownStatuses.forEach(s => {
+                const tr = traders[s.trader] || null;
+                quests.push({
+                    id: s.quest_id, unknown: true, customName: customName[s.quest_id] || '',
+                    name: customName[s.quest_id] || `Nowy quest ${s.quest_id.slice(-6)}`,
+                    trader: tr ? tr.name : 'Nieznany trader', traderImage: tr ? tr.imageLink : '', minLevel: 0,
+                    map: '', maps: [], wiki: '', faction: 'Any', image: '', kappa: false,
+                    reqIds: [], objectives: [], keys: [], give: [],
+                    status: s.status, statusAt: s.at, source: s.source,
+                    pos: posById[s.quest_id] !== undefined ? posById[s.quest_id] : null
+                });
+            });
+        }
         res.render('quests', { quests });
     } catch (e) {
         console.error("❌ [QUESTY] Błąd renderowania:", e.message);
         res.status(500).send('Błąd ładowania questów: ' + e.message);
     }
+});
+
+// własna nazwa questa spoza tarkov.dev; pusta = usuń
+app.post('/api/quests/:id/name', async (req, res) => {
+    if (!/^[0-9a-f]{24}$/i.test(req.params.id)) return res.status(400).json({ error: 'invalid id' });
+    const name = String(req.body.name || '').trim().slice(0, 80);
+    try {
+        if (name) await dbRun("INSERT INTO quest_names (quest_id, name) VALUES (?, ?) ON CONFLICT(quest_id) DO UPDATE SET name = excluded.name", [req.params.id, name]);
+        else await dbRun("DELETE FROM quest_names WHERE quest_id = ?", [req.params.id]);
+        res.json({ id: req.params.id, name });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ręczna kolejność po przeciągnięciu: "pairs" = "idQuesta:pozycja,idQuesta:pozycja,..."
