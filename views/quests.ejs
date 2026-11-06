@@ -150,6 +150,18 @@
         .sec-sep.any .ttl { color: #b9d3ea; }
         .sec-sep.new { border-left-color: #ff9a3c; background: linear-gradient(90deg, rgba(255,154,60,0.14), var(--panel) 60%); }
         .sec-sep.new .ttl { color: #ffb36b; }
+        .sec-sep.map { border-left-color: #6fbf73; flex-wrap: wrap; }
+        /* "weź na raid": zsumowane przedmioty (podłożenie/marker/flara) i klucze z widocznych questów */
+        .loadout { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding-top: 8px; border-top: 1px dashed var(--border-soft); }
+        .loadout .lbl { align-self: center; font-size: 0.72em; color: #8a8a8a; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 700; margin-right: 4px; }
+        .lo-item { width: 86px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 5px 4px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); cursor: help; }
+        .lo-item.key { background: rgba(224,194,90,0.07); border-color: rgba(224,194,90,0.25); }
+        .lo-item .pic { position: relative; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; font-size: 1.5em; }
+        .lo-item img { width: 44px; height: 44px; object-fit: contain; }
+        .lo-item .x { position: absolute; right: -14px; top: -6px; font-family: 'Consolas', monospace; font-weight: 800; font-size: 0.62em; line-height: 1.5; color: #fff; background: #2e7d32; border: 1px solid #111; border-radius: 999px; padding: 0 5px; }
+        .lo-item .nm { font-size: 0.7em; line-height: 1.2; text-align: center; color: #ccc; overflow-wrap: anywhere; }
+        .lo-item.key .nm { color: #e6d9a8; }
+        .lo-item .nm small { display: block; color: #777; }
         .quest.unknown { border-color: rgba(255,154,60,0.45); background: linear-gradient(180deg, rgba(255,154,60,0.07), var(--panel-2) 45%); }
         .q-unknown-note { font-size: 0.76em; color: #a88a6a; line-height: 1.4; }
         .q-unknown-note code { color: #777; font-size: 0.95em; }
@@ -493,19 +505,56 @@
         // Dwie części: najpierw questy na konkretnych mapach, pod spodem osobno "dowolna mapa"
         // (szukanie przedmiotów, modyfikacja broni, oddawanie...). Każda część to osobna siatka,
         // więc przeciąganie działa w obrębie części.
+        // Co wziąć na raid: przedmioty do podłożenia / markery / flary zsumowane z widocznych, nieukończonych
+        // questów (np. 3 questy po 1 markerze = ×3) + klucze. Przy wybranej mapie tylko to, co jest na tę mapę.
+        function raidLoadout(qs) {
+            const onSel = maps => mapFilter === 'all' || mapFilter === ANY_MAP || !maps.length || maps.includes(mapFilter);
+            const items = {}, keys = {};
+            qs.filter(q => q.status !== 'done').forEach(q => {
+                (q.bring || []).forEach(b => {
+                    if (!b.items.length || !onSel(b.maps || [])) return;
+                    const k = b.items.map(i => i.name).join('|');
+                    const e = items[k] = items[k] || { items: b.items, alternatives: b.alternatives, count: 0, quests: [] };
+                    e.count += b.count;
+                    if (!e.quests.includes(q.name)) e.quests.push(q.name);
+                });
+                (q.keys || []).forEach(kk => {
+                    if (!kk.items.length || !onSel(kk.map ? [kk.map] : [])) return;
+                    const k = kk.items.map(i => i.name).join('|');
+                    const e = keys[k] = keys[k] || { items: kk.items, alternatives: kk.alternatives, map: kk.map, quests: [] };
+                    if (!e.quests.includes(q.name)) e.quests.push(q.name);
+                });
+            });
+            const chip = (e, isKey) => {
+                const first = e.items[0];
+                const others = e.alternatives - 1;
+                const title = (isKey ? 'Klucz' : 'Weź ' + e.count + ' szt.') + (others > 0 ? ' - wystarczy jeden z: ' + e.items.map(i => i.name).join(', ') + (e.alternatives > e.items.length ? '…' : '') : '') +
+                    (isKey && e.map ? ' (' + e.map + ')' : '') + '\nQuesty: ' + e.quests.join(', ');
+                return `<div class="lo-item${isKey ? ' key' : ''}" title="${esc(title)}">
+                    <span class="pic">${first.image ? `<img src="${esc(first.image)}" alt="">` : (isKey ? '🔑' : '📦')}${isKey ? '' : `<span class="x">×${e.count}</span>`}</span>
+                    <span class="nm">${esc(first.name)}${others > 0 ? `<small>lub ${others} ${others === 1 ? 'inny' : 'innych'}</small>` : ''}</span>
+                </div>`;
+            };
+            const itemList = Object.values(items).sort((a, b) => b.count - a.count || a.items[0].name.localeCompare(b.items[0].name));
+            const keyList = Object.values(keys).sort((a, b) => a.items[0].name.localeCompare(b.items[0].name));
+            if (!itemList.length && !keyList.length) return '';
+            return `<div class="loadout"><span class="lbl">🎒 Weź na raid</span>${itemList.map(e => chip(e, false)).join('')}${keyList.map(e => chip(e, true)).join('')}</div>`;
+        }
+
         function questGrids(qs) {
             const fresh = qs.filter(q => q.unknown);
             const onMap = qs.filter(q => !q.unknown && !isAnyMap(q));
             const anyMap = qs.filter(q => !q.unknown && isAnyMap(q));
-            const sep = (cls, ico, ttl, sub, n, title) =>
-                `<div class="sec-sep ${cls}" title="${title}"><span class="ico">${ico}</span><span class="ttl">${ttl}</span><span class="sub">${sub}</span><span class="cnt">${n}</span></div>`;
+            const sep = (cls, ico, ttl, sub, n, title, extra = '') =>
+                `<div class="sec-sep ${cls}" title="${title}"><span class="ico">${ico}</span><span class="ttl">${ttl}</span><span class="sub">${sub}</span><span class="cnt">${n}</span>${extra}</div>`;
             let html = '';
             if (fresh.length) {
                 html += sep('new', '🆕', 'Nowe questy', 'np. event - tarkov.dev jeszcze ich nie opisał', fresh.length,
                     'Gra zapisała te questy w logach, ale tarkov.dev nie ma jeszcze ich danych. Uzupełnią się same po aktualizacji tarkov.dev.') +
                     `<div class="quest-grid">${fresh.map(questCard).join('')}</div>`;
-                if (onMap.length) html += sep('', '📍', 'Na konkretnych mapach', '', onMap.length, '');
             }
+            const loadout = onMap.length ? raidLoadout(onMap) : '';
+            if (onMap.length && (fresh.length || loadout)) html += sep('map', '📍', 'Na konkretnych mapach', '', onMap.length, '', loadout);
             if (onMap.length) html += `<div class="quest-grid">${onMap.map(questCard).join('')}</div>`;
             if (anyMap.length) {
                 html += sep('any', '🗺️', 'Dowolna mapa', 'szukanie przedmiotów, broń, oddawanie', anyMap.length,
