@@ -47,6 +47,18 @@ function bringItemsOf(objectives, mapName) {
         return { ids: ids.slice(0, 30), alternatives: ids.length, count: o.count || 1, maps: [...new Set((o.maps || []).map(mapName).filter(Boolean))] };
     }).filter(Boolean);
 }
+// klucze questa: każda grupa z requiredKeys celu to JEDEN potrzebny klucz (kilka id w grupie = zamienniki).
+// neededKeys z tarkov.dev skleja wszystkie klucze z danej mapy w jedną listę - wtedy wyglądały jak zamienniki,
+// choć trzeba mieć każdy z nich (np. Reserve Expert: 4 klucze). neededKeys tylko gdy celów z kluczami brak.
+function questKeysOf(t, mapNameById) {
+    const seen = new Set();
+    const fromObjectives = (t.objectives || []).flatMap(o => (o && o.requiredKeys || []).map(group => ({
+        map: mapNameById[(o.maps || [])[0]] || mapNameById[t.map] || '',
+        ids: (group || []).filter(Boolean)
+    }))).filter(k => k.ids.length && !seen.has(k.ids.slice().sort().join()) && seen.add(k.ids.slice().sort().join()));
+    if (fromObjectives.length) return fromObjectives;
+    return (t.neededKeys || []).flatMap(k => (k.keys || []).filter(Boolean).map(id => ({ map: mapNameById[k.map] || '', ids: [id] })));
+}
 // lista map questa: unikalne; quest na (prawie) wszystkich mapach = [] czyli "dowolna mapa"
 function questMapList(names) {
     const list = [...new Set((names || []).filter(Boolean))];
@@ -460,7 +472,7 @@ async function fetchTasksFromJsonApi(mode = 'regular') {
                     objectiveTexts: (t.objectives || []).map(o => ({ text: objectiveText(o.id), optional: !!o.optional })).filter(o => o.text),
                     // mapy questa = mapa główna + mapy wszystkich celów (wiele questów dzieje się na kilku mapach)
                     allMaps: [mapNameById[t.map], ...(t.objectives || []).flatMap(o => (o.maps || []).map(id => mapNameById[id]))],
-                    keysNorm: (t.neededKeys || []).map(k => ({ map: mapNameById[k.map] || '', ids: (k.keys || []).filter(Boolean) })).filter(k => k.ids.length),
+                    keysNorm: questKeysOf(t, mapNameById),
                     bringNorm: bringItemsOf(t.objectives, id => mapNameById[id]),
                     objectives,
                     taskRequirements: (t.taskRequirements || []).map(r => ({ task: { id: r.task, name: taskNameById[r.task] || '?' } }))
@@ -797,10 +809,11 @@ async function syncKappaWithAPI() {
                         ...(t.objectives || []).flatMap(o => (o && o.maps ? o.maps : []).map(m => m ? canonicalMapName(m.normalizedName, m.name) : ''))
                     ])),
                     // potrzebne klucze: [{ map, ids: [zamienniki] }] - z JSON (keysNorm) albo z GraphQL (neededKeys)
-                    JSON.stringify(t.keysNorm || (t.neededKeys || []).filter(Boolean).map(k => ({
+                    // (GraphQL neededKeys to wszystkie klucze z mapy naraz - każdy osobno, bo zwykle trzeba mieć wszystkie)
+                    JSON.stringify(t.keysNorm || (t.neededKeys || []).filter(Boolean).flatMap(k => (k.keys || []).filter(Boolean).map(x => ({
                         map: k.map ? canonicalMapName(k.map.normalizedName, k.map.name) : '',
-                        ids: (k.keys || []).filter(Boolean).map(x => x.id)
-                    })).filter(k => k.ids.length)),
+                        ids: [x.id]
+                    })))),
                     // co zabrać na raid: z JSON (bringNorm) albo z GraphQL (objectives)
                     JSON.stringify(t.bringNorm || bringItemsOf(t.objectives, m => m ? canonicalMapName(m.normalizedName, m.name) : '')));
             });
