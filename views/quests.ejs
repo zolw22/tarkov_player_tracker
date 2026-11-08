@@ -332,14 +332,14 @@
                 <span class="sk-ttl">⚠️ Skrypt pominął <%= skipped.length %> <%= skipped.length === 1 ? 'zdarzenie' : 'zdarzeń' %> sprzed wipe'a</span>
                 <button type="button" class="sk-dismiss" onclick="includeSkipped(0)">Ukryj</button>
             </div>
-            <div class="sk-sub">Np. questy wzięte w grze tuż przed kliknięciem Wipe w apce. Kliknij <b>Licz od tego</b> przy pierwszym, które dotyczy już nowej postaci - wczyta je i wszystko po nim.</div>
+            <div class="sk-sub">Np. questy wzięte w grze tuż przed kliknięciem Wipe w apce. To, co zrobiłeś już na nowej postaci, kliknij <b>Wczytaj ten i niższe</b> przy najwyższym takim wierszu - wczyta go razem ze wszystkimi pod nim.</div>
             <div class="sk-list">
                 <% skipped.forEach(function (e) { %>
                 <div class="sk-row">
                     <span class="sk-time" data-at="<%= e.at %>"></span>
                     <span class="sk-st <%= e.status %>"><%= e.status === 'done' ? 'ukończony' : e.status === 'started' ? 'wzięty' : 'nieudany' %></span>
                     <span class="sk-name"><%= e.name %></span>
-                    <button type="button" class="sk-btn" onclick="includeSkipped(<%= e.at %>)">Licz od tego</button>
+                    <button type="button" class="sk-btn" onclick="includeSkipped(<%= e.at %>)">Wczytaj ten i niższe</button>
                 </div>
                 <% }) %>
             </div>
