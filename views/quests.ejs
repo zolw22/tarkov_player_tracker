@@ -150,6 +150,21 @@
         .sec-sep.any .ttl { color: #b9d3ea; }
         .sec-sep.new { border-left-color: #ff9a3c; background: linear-gradient(90deg, rgba(255,154,60,0.14), var(--panel) 60%); }
         .sec-sep.new .ttl { color: #ffb36b; }
+        /* pominięte zdarzenia sprzed wipe'a */
+        .skipped-box { margin-bottom: 16px; padding: 12px 16px; border-radius: var(--radius); background: linear-gradient(90deg, rgba(255,154,60,0.12), var(--panel) 70%); border: 1px solid rgba(255,154,60,0.4); border-left: 4px solid #ff9a3c; }
+        .sk-head { display: flex; align-items: center; gap: 12px; }
+        .sk-ttl { font-weight: 800; color: #ffb36b; }
+        .sk-sub { font-size: 0.82em; color: #9a9a9a; margin: 4px 0 10px; }
+        .sk-dismiss { margin-left: auto; background: none; border: 1px solid #444; color: #999; border-radius: 6px; padding: 3px 10px; cursor: pointer; font-size: 0.8em; }
+        .sk-list { display: flex; flex-direction: column; gap: 4px; }
+        .sk-row { display: grid; grid-template-columns: 130px 80px 1fr auto; gap: 10px; align-items: center; font-size: 0.85em; padding: 4px 8px; border-radius: 6px; background: rgba(0,0,0,0.25); }
+        .sk-time { font-family: 'Consolas', monospace; color: #aaa; }
+        .sk-st { font-weight: 700; font-size: 0.85em; text-transform: uppercase; color: #8fb0d0; }
+        .sk-st.done { color: #6fbf73; }
+        .sk-st.failed { color: #e57373; }
+        .sk-name { color: #ddd; min-width: 0; overflow-wrap: anywhere; }
+        .sk-btn { background: #ff9a3c; color: #111; border: none; border-radius: 6px; padding: 4px 10px; font-weight: 700; cursor: pointer; font-size: 0.85em; }
+        .sk-btn:hover { background: #ffb36b; }
         .sec-sep.map { border-left-color: #6fbf73; flex-wrap: wrap; }
         /* "weź na raid": zsumowane przedmioty (podłożenie/marker/flara) i klucze z widocznych questów */
         .loadout { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding-top: 8px; border-top: 1px dashed var(--border-soft); }
@@ -311,6 +326,25 @@
             </div>
         </div>
 
+        <% if (locals.skipped && skipped.length) { %>
+        <div class="skipped-box" id="skippedBox">
+            <div class="sk-head">
+                <span class="sk-ttl">⚠️ Skrypt pominął <%= skipped.length %> <%= skipped.length === 1 ? 'zdarzenie' : 'zdarzeń' %> sprzed wipe'a</span>
+                <button type="button" class="sk-dismiss" onclick="includeSkipped(0)">Ukryj</button>
+            </div>
+            <div class="sk-sub">Np. questy wzięte w grze tuż przed kliknięciem Wipe w apce. Kliknij <b>Licz od tego</b> przy pierwszym, które dotyczy już nowej postaci - wczyta je i wszystko po nim.</div>
+            <div class="sk-list">
+                <% skipped.forEach(function (e) { %>
+                <div class="sk-row">
+                    <span class="sk-time" data-at="<%= e.at %>"></span>
+                    <span class="sk-st <%= e.status %>"><%= e.status === 'done' ? 'ukończony' : e.status === 'started' ? 'wzięty' : 'nieudany' %></span>
+                    <span class="sk-name"><%= e.name %></span>
+                    <button type="button" class="sk-btn" onclick="includeSkipped(<%= e.at %>)">Licz od tego</button>
+                </div>
+                <% }) %>
+            </div>
+        </div>
+        <% } %>
         <div id="questList"></div>
         <div class="empty-state" id="noData" style="display:none;">Brak danych o questach. Poczekaj na synchronizację z tarkov.dev (do kilku minut po starcie serwera).</div>
     </div>
@@ -595,6 +629,21 @@
                     `<div class="quest-grid">${anyMap.map(questCard).join('')}</div>`;
             }
             return html;
+        }
+
+        // pominięte zdarzenia sprzed wipe'a: czas w strefie przeglądarki; from = 0 tylko chowa listę
+        document.querySelectorAll('.sk-time[data-at]').forEach(el => {
+            el.textContent = new Date(Number(el.dataset.at)).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        });
+        async function includeSkipped(from) {
+            if (from && !confirm('Wczytać ten quest i wszystkie zdarzenia po nim? Wipe zostanie przesunięty na ten moment.')) return;
+            try {
+                const res = await fetch('/api/quests/skipped', {
+                    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ from: String(from) })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                location.reload();
+            } catch (e) { console.error(e); alert('Nie udało się zapisać.'); }
         }
 
         async function renameQuest(id) {

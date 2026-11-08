@@ -1235,6 +1235,18 @@ async function mirrorKappaRowToQuestStatus(kappaRowId) {
     await setQuestStatusManual(questId, status, { syncKappa: false });
 }
 
+// Zdarzenia z ostatnich godzin PRZED wipe'em zapamiętujemy (zamiast tylko je pomijać): gdy ktoś najpierw weźmie
+// questy w grze, a dopiero potem kliknie Wipe w apce, może je potem uwzględnić na stronie Questy.
+const SKIPPED_WINDOW = 6 * 60 * 60 * 1000;
+async function getSkippedBeforeWipe() {
+    const row = await dbGet("SELECT value FROM app_settings WHERE key = 'skipped_before_wipe'");
+    return parseJson(row && row.value, []);
+}
+async function setSkippedBeforeWipe(list) {
+    if (!list.length) return dbRun("DELETE FROM app_settings WHERE key = 'skipped_before_wipe'");
+    return dbRun("INSERT INTO app_settings (key, value) VALUES ('skipped_before_wipe', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [JSON.stringify(list)]);
+}
+
 // body: { events: [{ questId, at, type }] } - at = ms (czas z serwera BSG), type 10/11/12 (brak = 12, skrypt v1.0)
 app.post('/api/logwatcher/quests', async (req, res) => {
     logwatcher.lastSeen = Date.now();
@@ -1250,13 +1262,25 @@ app.post('/api/logwatcher/quests', async (req, res) => {
             .sort((a, b) => a.at - b.at);
         let accepted = 0, started = 0, old = 0;
         const kappaMarked = [];
+        const skipped = [];
         for (const ev of events) {
-            if (ev.at < wipeAt) { old++; continue; }
+            if (ev.at < wipeAt) {
+                old++;
+                if (ev.at >= wipeAt - SKIPPED_WINDOW && !ev.questId.startsWith('6160')) skipped.push(ev);
+                continue;
+            }
             const r = await applyQuestLogEvent(ev.questId, ev.status, ev.at, ev.trader);
             if (!r) continue;
             if (r.status === 'done') accepted++;
             if (r.status === 'started') started++;
             if (r.kappa) kappaMarked.push(r.kappa);
+        }
+        if (skipped.length) {
+            const list = await getSkippedBeforeWipe();
+            const key = e => e.questId + '|' + e.status + '|' + e.at;
+            const have = new Set(list.map(key));
+            skipped.forEach(e => { if (!have.has(key(e))) { list.push(e); have.add(key(e)); } });
+            await setSkippedBeforeWipe(list.sort((a, b) => a.at - b.at).slice(-100));
         }
         if (accepted > 0 || started > 0) console.log(`📜 [LOGI] Skrypt: ukończone ${accepted}, rozpoczęte ${started} (Kappa odhaczone: ${kappaMarked.length}${kappaMarked.length ? ' - ' + kappaMarked.slice(0, 5).join(', ') + (kappaMarked.length > 5 ? '...' : '') : ''}).`);
         res.json({ ok: true, accepted, started, ignoredBeforeWipe: old, kappaMarked });
@@ -1266,11 +1290,12 @@ app.post('/api/logwatcher/quests', async (req, res) => {
 // --- STRONA QUESTY ---
 app.get('/quests', async (req, res) => {
     try {
-        const [tasks, statuses, kappaRows, orderRows] = await Promise.all([
+        const [tasks, statuses, kappaRows, orderRows, skippedRaw] = await Promise.all([
             dbAll("SELECT * FROM tarkov_tasks_cache ORDER BY trader, min_level, name"),
             dbAll("SELECT * FROM quest_status"),
             dbAll("SELECT name, task_id, min_level, requirement_names FROM kappa_tracker WHERE type = 'quest'"),
-            dbAll("SELECT quest_id, pos FROM quest_order")
+            dbAll("SELECT quest_id, pos FROM quest_order"),
+            getSkippedBeforeWipe()
         ]);
         const posById = {}; orderRows.forEach(o => { posById[o.quest_id] = o.pos; });
         // starsze, pełniejsze dane z listy Kappy (z czasów działającego GraphQL) jako uzupełnienie braków
@@ -1343,11 +1368,37 @@ app.get('/quests', async (req, res) => {
                 });
             });
         }
-        res.render('quests', { quests });
+        // zdarzenia z logów tuż sprzed wipe'a (np. questy wzięte w grze przed kliknięciem Wipe) - do uwzględnienia
+        let skipped = [];
+        if (skippedRaw.length) {
+            const nameById = {}; quests.forEach(q => { nameById[q.id] = q.name; });
+            skipped = skippedRaw.map(e => ({ questId: e.questId, status: e.status, at: e.at, name: nameById[e.questId] || `Nowy quest ${e.questId.slice(-6)}` }));
+        }
+        res.render('quests', { quests, skipped });
     } catch (e) {
         console.error("❌ [QUESTY] Błąd renderowania:", e.message);
         res.status(500).send('Błąd ładowania questów: ' + e.message);
     }
+});
+
+// Uwzględnij pominięte zdarzenia sprzed wipe'a: wipe przesuwamy na "from" i wczytujemy wszystko od tego momentu.
+// body: from = czas (ms) pierwszego zdarzenia do uwzględnienia; bez "from" = tylko wyczyść listę.
+app.post('/api/quests/skipped', async (req, res) => {
+    try {
+        const list = await getSkippedBeforeWipe();
+        const from = Number(req.body && req.body.from) || 0;
+        if (!from) { await setSkippedBeforeWipe([]); return res.json({ ok: true, applied: 0 }); }
+        const wipeAt = await getWipeAt();
+        if (from >= wipeAt) return res.status(400).json({ error: 'from must be before wipe' });
+        await dbRun("UPDATE app_settings SET value = ? WHERE key = 'wipe_at'", [String(from)]);
+        let applied = 0;
+        for (const ev of list.filter(e => e.at >= from)) {
+            if (await applyQuestLogEvent(ev.questId, ev.status, ev.at, ev.trader)) applied++;
+        }
+        await setSkippedBeforeWipe(list.filter(e => e.at < from));
+        console.log(`📜 [LOGI] Uwzględniono ${applied} zdarzeń sprzed wipe'a (wipe przesunięty na ${new Date(from).toISOString()}).`);
+        res.json({ ok: true, applied });
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // własna nazwa questa spoza tarkov.dev; pusta = usuń
@@ -1432,6 +1483,7 @@ app.post('/wipe', (req, res) => {
             // od teraz skrypt logów liczy tylko questy ukończone po tym momencie
             db.run("DELETE FROM quest_completions");
             db.run("DELETE FROM quest_status");
+            db.run("DELETE FROM app_settings WHERE key = 'skipped_before_wipe'");
             db.run("INSERT INTO app_settings (key, value) VALUES ('wipe_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [String(Date.now())]);
             db.run("COMMIT", () => {
                 console.log("🧨 [WIPE] Reset postępu wykonany (Kappa Tracker + lista lootu + hideout + questy ze skryptu logów).");

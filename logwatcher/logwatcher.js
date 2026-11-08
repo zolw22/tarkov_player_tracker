@@ -17,10 +17,10 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 
-const VERSION = '1.2';
+const VERSION = '1.3';
 // 2 = wysyłamy też rozpoczęcia/porażki; 3 = wysyłamy też tradera (dla questów spoza tarkov.dev).
 // Zmiana wersji = starszy stan czytamy od nowa (serwer pomija to, co już ma).
-const STATE_VERSION = 3;
+const STATE_VERSION = 4;
 const DEFAULTS = {
     server: 'http://192.168.1.209:9999',
     logsDir: 'T:\\TARCZYCE\\Tarkov\\Logs',
@@ -56,7 +56,7 @@ function loadState() {
     try {
         const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
         if (s.version !== STATE_VERSION) { log('ℹ️ Nowa wersja skryptu - czytam logi od nowa (serwer pomija to, co już ma).'); return { version: STATE_VERSION, files: {} }; }
-        return { version: STATE_VERSION, files: s.files || {} };
+        return { version: STATE_VERSION, files: s.files || {}, wipeAt: s.wipeAt };
     }
     catch (e) { return { version: STATE_VERSION, files: {} }; }
 }
@@ -123,6 +123,13 @@ let lastProblem = null; // żeby nie spamować logu tym samym błędem co 20 s
 async function tick(state) {
     const hb = await post('/api/logwatcher/heartbeat', { version: VERSION, host: os.hostname() });
     const wipeAt = Number(hb.wipeAt) || 0;
+    // wipe w apce (albo przesunięcie jego daty): czytamy wszystko od nowa - serwer zapamięta zdarzenia
+    // tuż sprzed wipe'a, żeby dało się je uwzględnić (np. questy wzięte w grze przed kliknięciem Wipe)
+    if (state.wipeAt !== undefined && state.wipeAt !== wipeAt) {
+        log('ℹ️ Zmienił się wipe w apce - czytam logi od nowa.');
+        state.files = {};
+    }
+    if (state.wipeAt !== wipeAt) { state.wipeAt = wipeAt; saveState(state); }
 
     let sentFiles = 0, totalAccepted = 0, totalStarted = 0;
     const kappaMarked = [];
